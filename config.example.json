@@ -1,0 +1,88 @@
+{
+    "host": "qradar.example.lan",
+    "token": "CHANGE_ME",
+    "api_version": null,
+    "verify_ssl": true,
+    "ssl_cert_path": null,
+    "safety": true,
+    "timeout": 30,
+    "page_size": 500,
+    "log_file": "assetsuite.log",
+    "netbox": {
+        "url": "https://netbox.example.lan",
+        "token": "CHANGE_ME",
+        "verify_ssl": true,
+        "ssl_cert_path": null,
+        "domain": "DEFAULT_DOMAIN",
+        "statuses": [
+            "active"
+        ],
+        "mapping": {
+            "Given Name": {
+                "first": [
+                    "object_name",
+                    "dns_name"
+                ]
+            },
+            "Description": {
+                "first": [
+                    "ip_description",
+                    "object_description"
+                ]
+            },
+            "Location": {
+                "join": [
+                    "site",
+                    "location",
+                    "rack"
+                ],
+                "separator": " / "
+            },
+            "Asset Type": {
+                "first": [
+                    "role"
+                ]
+            },
+            "Business Owner": {
+                "first": [
+                    "tenant"
+                ]
+            },
+            "User Supplied OS": {
+                "first": [
+                    "platform"
+                ]
+            }
+        }
+    },
+    "pfsense": {
+        "files": [
+            "private/*.xml"
+        ],
+        "domain": "DEFAULT_DOMAIN",
+        "dns_domain": "example.lan",
+        "networks": [
+            "192.0.2.0/24",
+            "198.51.100.0/24"
+        ],
+        "overwrite": false,
+        "mapping": {
+            "Given Name": {
+                "first": [
+                    "dns_name"
+                ]
+            },
+            "Description": {
+                "first": [
+                    "dns_description",
+                    "dhcp_description"
+                ]
+            },
+            "Asset Type": {
+                "first": [
+                    "category"
+                ]
+            }
+        }
+    }
+}

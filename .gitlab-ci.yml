@@ -1,0 +1,58 @@
+stages:
+  - lint
+  - test
+  - live
+
+include:
+  - template: Jobs/Secret-Detection.gitlab-ci.yml
+
+default:
+  image: python:3.12-slim
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+
+cache:
+  key: pip
+  paths:
+    - .cache/pip
+
+lint:
+  stage: lint
+  script:
+    - pip install ruff
+    - ruff check .
+    - ruff format --check .
+
+unit-tests:
+  stage: test
+  parallel:
+    matrix:
+      - PYTHON_VERSION: ["3.9", "3.12"]
+  image: python:${PYTHON_VERSION}-slim
+  script:
+    - pip install -r requirements-dev.txt
+    - pytest --junitxml=report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: report.xml
+
+# Read-only tests against a real QRadar. Manual, and only when the CI/CD
+# variables QRADAR_HOST, QRADAR_SEC_TOKEN (masked, protected) and
+# QRADAR_SSL_CERT_PATH (type File) are defined. Needs a runner that reaches it.
+live-tests:
+  stage: live
+  rules:
+    - if: $QRADAR_SEC_TOKEN
+      when: manual
+      allow_failure: true
+  variables:
+    ASSETSUITE_LIVE: "1"
+  script:
+    - pip install -r requirements-dev.txt
+    - pytest tests/live --junitxml=live-report.xml
+  artifacts:
+    when: always
+    reports:
+      junit: live-report.xml

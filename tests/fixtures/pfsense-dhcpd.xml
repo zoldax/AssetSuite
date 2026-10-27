@@ -1,0 +1,40 @@
+<?xml version="1.0"?>
+<dhcpd>
+	<lan>
+		<enable></enable>
+		<range>
+			<from>192.0.2.170</from>
+			<to>192.0.2.189</to>
+		</range>
+		<staticmap>
+			<mac>A4:FC:14:00:00:01</mac>
+			<cid></cid>
+			<ipaddr>192.0.2.143</ipaddr>
+			<hostname>ws01</hostname>
+			<descr><![CDATA[MAC Fixe - ethernet]]></descr>
+			<ddnsdomainkey>not-read-by-assetsuite</ddnsdomainkey>
+		</staticmap>
+		<staticmap>
+			<mac>00:11:32:00:00:02</mac>
+			<ipaddr>192.0.2.70</ipaddr>
+			<hostname>diskstation</hostname>
+			<descr><![CDATA[NAS - DiskStation]]></descr>
+		</staticmap>
+		<staticmap>
+			<mac>00:11:32:00:00:03</mac>
+			<ipaddr></ipaddr>
+			<hostname>reserved-only</hostname>
+			<descr></descr>
+		</staticmap>
+	</lan>
+	<opt3>
+		<enable></enable>
+		<staticmap>
+			<mac>b2:8d:72:00:00:04</mac>
+			<ipaddr>198.51.100.90</ipaddr>
+			<hostname>scale</hostname>
+			<domain>iot.example.lan</domain>
+			<descr><![CDATA[DOMOTIQUE - Balance]]></descr>
+		</staticmap>
+	</opt3>
+</dhcpd>

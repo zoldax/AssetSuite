@@ -1,0 +1,31 @@
+[project]
+name = "assetsuite"
+dynamic = ["version"]
+description = "Asset management toolkit for IBM QRadar SIEM"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Pascal Weber (zoldax) / Abakus Sécurité" }]
+requires-python = ">=3.9"
+dependencies = ["requests>=2.31", "defusedxml>=0.7"]
+
+[tool.setuptools.dynamic]
+version = { attr = "assetsuite.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+    "live: runs against a real QRadar (ASSETSUITE_LIVE=1)",
+    "live_write: writes to a real QRadar (ASSETSUITE_LIVE_WRITE=1)",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+ignore = ["UP006", "UP007", "UP035", "UP045"]  # keep typing.List/Optional, the code supports Python 3.9
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S105", "S106"]

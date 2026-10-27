@@ -1,0 +1,29 @@
+# Local configuration: holds the SEC token, never commit it
+config.json
+config.*.json
+!config.example.json
+
+# Exports of other systems (pfSense config.xml...) hold secrets
+private/
+*.xml
+!tests/**/*.xml
+
+# Logs, backups and exports may contain asset data
+*.log
+safety/
+exports/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+report.xml
+
+# OS
+.DS_Store

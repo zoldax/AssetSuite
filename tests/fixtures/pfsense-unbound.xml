@@ -1,0 +1,46 @@
+<?xml version="1.0"?>
+<unbound>
+	<enable></enable>
+	<regdhcpstatic></regdhcpstatic>
+	<hosts>
+		<host>ws01</host>
+		<domain>example.lan</domain>
+		<ip>192.0.2.143</ip>
+		<descr><![CDATA[PC FIXE - Workstation 01]]></descr>
+		<aliases>
+			<item>
+				<host>ws01-alias</host>
+				<domain>example.local</domain>
+				<description></description>
+			</item>
+		</aliases>
+	</hosts>
+	<hosts>
+		<host>docker</host>
+		<domain>example.lan</domain>
+		<ip>192.0.2.26</ip>
+		<descr><![CDATA[Docker host]]></descr>
+		<aliases></aliases>
+	</hosts>
+	<hosts>
+		<host>media</host>
+		<domain>example.local</domain>
+		<ip>192.0.2.26</ip>
+		<descr></descr>
+		<aliases></aliases>
+	</hosts>
+	<hosts>
+		<host>nas</host>
+		<domain>example.lan</domain>
+		<ip>192.0.2.71</ip>
+		<descr><![CDATA[NAS - DS212]]></descr>
+		<aliases></aliases>
+	</hosts>
+	<hosts>
+		<host>remote</host>
+		<domain>example.net</domain>
+		<ip>203.0.113.9</ip>
+		<descr><![CDATA[Outside the lab]]></descr>
+		<aliases></aliases>
+	</hosts>
+</unbound>
