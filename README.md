@@ -16,6 +16,12 @@ AssetSuite helps manage the IBM QRadar asset model from the command line: export
 
 ## 📦 Installation
 
+**Run AssetSuite from an admin workstation or a small Linux VM with Python 3.9 or later, not on the QRadar console.** AssetSuite only talks to the QRadar REST API (and to NetBox), like NHSuite, so it does not need to be on QRadar:
+- the console's system Python (3.6 on QRadar 7.5/7.6, RHEL 8) is too old: AssetSuite needs 3.9+, and on 3.6 `requests` would be stuck at 2.27.1, without its later security fixes;
+- installing packages into that Python can break QRadar components, is not supported by IBM, and may be undone by a QRadar upgrade.
+
+The machine needs HTTPS access to the console (and to NetBox), the PEM of the internal CA if the certificates come from one, and the `config.json` holding the token. On RHEL 8/9: `sudo dnf install python3.11`, then create the virtual environment below with `python3.11 -m venv .venv`. On macOS, prefer a recent Python (e.g. Homebrew) to `/usr/bin/python3`, which is built with LibreSSL 2.8.3 (urllib3 `NotOpenSSLWarning`, no TLS 1.3).
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
