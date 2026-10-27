@@ -6,6 +6,8 @@ AssetSuite helps manage the IBM QRadar asset model from the command line: export
 
 > **Status: v0.7.2.** Connection and API capability checks, property and saved search listing, asset export to CSV/JSON, import (property updates and creation of missing assets) with dry run, safety backup and restore, NetBox IPAM and pfSense DNS/DHCP synchronization, data quality report cross-checked with the Network Hierarchy, unit and live test suites.
 
+> ⚠️ **Before we go further: AssetSuite is NOT meant to be installed on a QRadar console or any QRadar appliance.** It runs from an admin workstation or a small Linux VM and only talks to QRadar through the REST API. Installing it, or its Python packages, on QRadar is unsupported by IBM and can break QRadar components. [Details below](#-installation).
+
 ---
 
 ## 📌 Details
