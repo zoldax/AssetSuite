@@ -283,6 +283,8 @@ Exit codes, error messages, their causes and fixes: [README-ERROR.md](README-ERR
 
 ## 📜 Disclaimer
 
-All content is without warranty of any kind. Use at your own risk. Always test changes in a lab before production, and keep backups.
+This software is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement. In no event shall the authors or contributors be held liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use of this software. See the [LICENSE](LICENSE) (Apache 2.0, sections 7 and 8).
 
-QRadar and IBM are trademarks or registered trademarks of International Business Machines Corp. All other trademarks are the property of their respective owners.
+Use at your own risk. AssetSuite can create, modify and delete assets in QRadar: run a dry run first, test in a lab before production, and keep the safety backups. A restore cannot fully undo an import, as the QRadar API cannot empty a property. By using this software, you acknowledge that you assume all responsibility and potential risks associated with its usage, including compliance with the license and terms of IBM QRadar and of any connected product (NetBox, pfSense).
+
+AssetSuite is an independent project, not affiliated with, endorsed or supported by IBM, Netgate or NetBox Labs. QRadar and IBM are trademarks or registered trademarks of International Business Machines Corp. pfSense is a trademark of Electric Sheep Fencing LLC (Netgate). NetBox is a trademark of NetBox Labs. All other trademarks are the property of their respective owners.
