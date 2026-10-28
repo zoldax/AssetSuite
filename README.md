@@ -120,6 +120,13 @@ python3 AssetSuite.py import owners.csv --apply            # updates the propert
 python3 AssetSuite.py import new.csv --allow-create --apply  # also creates the assets QRadar does not know
 ```
 
+**Template**: [templates/assets-import-template.csv](templates/assets-import-template.csv) shows the columns with example values (documentation IPs and `example.lan` names): an asset with MAC, DNS and NETBIOS names, one with two IPs, a cell holding a comma, and a row that only sets `Business Owner`. Copy it, replace the rows, keep only the property columns you need, and check the names with `properties` (custom properties come with their own names). It also helps when QRadar holds no assets yet, as an export then only gives the header.
+
+```bash
+cp templates/assets-import-template.csv my-assets.csv   # then edit my-assets.csv
+python3 AssetSuite.py import my-assets.csv --allow-create  # dry run
+```
+
 **Nothing is written without `--apply`.** The dry run prints the plan and writes a report (`exports/import-report-HOST-TIMESTAMP.csv`) with one line per row: `update`, `create`, `unchanged`, `not_found` or `error`.
 
 **Columns**
@@ -267,7 +274,7 @@ Create an authorized service with a security profile covering the domains to man
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                                     # 214 unit tests, QRadar and NetBox APIs mocked
+pytest                                     # 217 unit tests, QRadar and NetBox APIs mocked
 ASSETSUITE_LIVE=1 pytest tests/live        # 18 read-only tests against the QRadar (NetBox, pfSense backups) of config.json
 ASSETSUITE_LIVE=1 ASSETSUITE_LIVE_WRITE=1 pytest tests/live   # + a write test on a temporary asset
 ruff check .                               # lint

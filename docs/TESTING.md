@@ -25,7 +25,7 @@ The mocked responses follow what QRadar 7.6.0 FP1 returns (shapes checked on the
 | `test_capabilities.py` | 10 | API versions and asset endpoints from `/help`, features per pinned API version (create 24.0+, bulk 29.0+), `caller_has_access`, removed versions, `ILIKE` fallback |
 | `test_assets.py` | 18 | Timestamps, CIDR / seen / property filters, export rows (per asset, per IP), saved search lookup, `id IN` chunks |
 | `test_export.py` | 13 | CSV formula escaping, CSV and JSON writers, default paths |
-| `test_importer.py` | 47 | CSV reading (BOM, delimiters, unescaping), column checks, matching order and ambiguity, tie-break by MAC then DNS / NETBIOS names in order, `--fill-empty-only`, assets without IP skipped, numeric comparison, per-IP rows merged, conflicting rows, creation limits, single and bulk payloads |
+| `test_importer.py` | 49 | CSV reading (BOM, delimiters, unescaping), import template (plans without errors, documentation values only), column checks, matching order and ambiguity, tie-break by MAC then DNS / NETBIOS names in order, `--fill-empty-only`, assets without IP skipped, numeric comparison, per-IP rows merged, conflicting rows, creation limits, single and bulk payloads |
 | `test_writer.py` | 10 | Updates, single create (201 / 200 reconciled / errors), bulk task polling, split on "too large", 429 retry, timeout, `Accept: text/plain` on update / PATCH / DELETE, backup and restore planning, deletes |
 | `test_quality.py` | 8 | Duplicates per domain, stale, unnamed, owners, vulnerable, ordering |
 | `test_network_hierarchy.py` | 9 |

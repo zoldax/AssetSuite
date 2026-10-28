@@ -1,0 +1,5 @@
+domain_name,ip_addresses,mac_addresses,dns_names,netbios_names,Given Name,Description,Location,Asset Type,Business Owner,User Supplied OS
+DEFAULT_DOMAIN,192.0.2.10,00:00:5e:00:53:01,srv01.example.lan,SRV01,srv01,File server,HQ / Server room / Rack A1,Server,IT Operations,Windows Server 2022
+DEFAULT_DOMAIN,192.0.2.20;192.0.2.21,00:00:5e:00:53:02,fw01.example.lan,,fw01,Firewall (LAN and DMZ),HQ / Server room / Rack A2,Firewall,Network team,
+DEFAULT_DOMAIN,192.0.2.30,,printer01.example.lan,,printer01,"Printer, floor 1",HQ / Floor 1,Printer,Facilities,
+DEFAULT_DOMAIN,192.0.2.40,,,,,,,,Security team,

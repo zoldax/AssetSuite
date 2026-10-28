@@ -1,3 +1,6 @@
+import ipaddress
+import pathlib
+
 import pytest
 
 from assetsuite.importer import (
@@ -341,3 +344,39 @@ def test_asset_without_ip_is_skipped_not_updated():
 def test_asset_without_ip_and_nothing_to_change_is_unchanged():
     plan = plan_of(["dns_names", "Business Owner"], ["gitlab", ""])
     assert plan.unchanged == [(2, 2757)] and not plan.skipped
+
+
+# --- Template ----------------------------------------------------------------
+
+TEMPLATE = pathlib.Path(__file__).resolve().parent.parent / "templates" / "assets-import-template.csv"
+TEMPLATE_CATALOG = [
+    {"id": 1000 + i, "name": name}
+    for i, name in enumerate(
+        ("Given Name", "Description", "Location", "Asset Type", "Business Owner", "User Supplied OS")
+    )
+]
+
+
+def test_template_plans_without_errors():
+    header, template_rows = read_import_file(str(TEMPLATE))
+    domains = [{**d, "name": DOMAIN_NAMES[d["id"]]} for d in DOMAINS]
+    plan = Planner([], TEMPLATE_CATALOG, domains, can_create=True).plan(header, template_rows)
+    assert not plan.errors and not plan.not_found
+    by_ip = {c.ips[0]: c for c in plan.creations}
+    assert sorted(by_ip) == ["192.0.2.10", "192.0.2.20", "192.0.2.30", "192.0.2.40"]
+    assert by_ip["192.0.2.20"].ips == ["192.0.2.20", "192.0.2.21"]
+    assert (by_ip["192.0.2.10"].mac, by_ip["192.0.2.10"].dns) == ("00:00:5e:00:53:01", "srv01.example.lan")
+    assert by_ip["192.0.2.30"].properties["Description"] == "Printer, floor 1"
+    assert by_ip["192.0.2.40"].properties == {"Business Owner": "Security team"}  # empty cells left unchanged
+
+
+def test_template_only_uses_documentation_values():
+    """The template stays generic: documentation IPs (RFC 5737), MACs (RFC 7042) and example.lan names."""
+    _, template_rows = read_import_file(str(TEMPLATE))
+    documentation = ipaddress.ip_network("192.0.2.0/24")
+    for row in template_rows:
+        assert all(ipaddress.ip_address(ip) in documentation for ip in row.values["ip_addresses"].split(";"))
+        mac = row.values["mac_addresses"]
+        assert not mac or mac.startswith("00:00:5e:00:53:")
+        assert all(name.endswith(".example.lan") for name in row.values["dns_names"].split(";") if name)
+    assert "zoldax" not in TEMPLATE.read_text(encoding="utf-8")
