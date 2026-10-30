@@ -1,7 +1,7 @@
 """
 mapping.py
 
-Property mapping rules shared by the integrations (NetBox, pfSense): a QRadar
+Property mapping rules shared by the integrations (NetBox, pfSense, SevOne): a QRadar
 property is filled from the fields of a source record.
 
 Rule forms in the configuration:

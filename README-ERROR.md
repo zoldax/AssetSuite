@@ -154,6 +154,23 @@ Report status `reconciled`: QRadar merged the row into an existing asset (its id
 | `Unknown pfsense setting(s)` / `Invalid pfsense.networks value` / `'pfsense.overwrite' must be true or false` | Fix the `pfsense` section |
 | `pfsense.mapping['X']: unknown field(s)` | Fields: see the README |
 
+## SevOne errors (`sevone-sync`, exit 2)
+
+| Message | Fix |
+|---|---|
+| `SevOne is not configured` | Add the `sevone` section (see `config.example.json`) |
+| `'sevone.token' is not set` | Create an API key (`POST /api/v3/users/apikey`) and put its `apiKey` in `sevone.token` or `SEVONE_TOKEN` |
+| `SevOne refused the API key (HTTP 401/403)` | Key wrong, deleted, or replaced: a new key for the same application invalidates the previous one. Create one key, copy the `apiKey` of the answer, do not create it again |
+| `Unknown sevone setting(s)` / `'sevone.overwrite' must be true or false` / `'sevone.device_groups' must be a list ...` | Fix the `sevone` section |
+| `sevone.mapping['X']: unknown field(s)` | Fields: see the README, or `md:<Namespace.Attribute>` for another metadata attribute |
+| `Unknown SevOne device group(s): X` | Name, path (`All Device Groups/...`) or id of a SevOne device group |
+| `Unknown asset propert(y/ies): X` | A mapping key is not a property of this QRadar (case-sensitive, see `properties`) |
+| `TLS verification failed for SevOne` | Set `sevone.ssl_cert_path`, or `sevone.verify_ssl: false` in a lab (SevOne ships a self-signed certificate) |
+| `Cannot reach SevOne ...` | URL, DNS, firewall |
+| `HTTP 4xx/5xx from SevOne on ...` | The SevOne API answered with an error: check the SevOne version (tested on 7.2) |
+
+`TLS verification is disabled for SevOne` is a warning printed when `sevone.verify_ssl` is false. `left aside: X: polled on 127.0.0.1` lists the devices that are not hosts (HTTP or DNS probes, SevOne itself) or are deleted in SevOne.
+
 ## Report warnings
 
 | Message | Meaning |

@@ -57,6 +57,9 @@ from assetsuite.quality import (
     sort_findings,
     summary,
 )
+from assetsuite.sevone import SevOneClient, SevOneError, load_sevone_config
+from assetsuite.sevone import fetch_records as sevone_fetch_records
+from assetsuite.sevone import import_rows as sevone_import_rows
 from assetsuite.system import get_system_about, list_domains
 from assetsuite.writer import (
     Outcome,
@@ -429,6 +432,34 @@ def cmd_pfsense_sync(client: QRadarClient, args: argparse.Namespace) -> int:
     return run_import(client, args, header, rows)
 
 
+def cmd_sevone_sync(client: QRadarClient, args: argparse.Namespace) -> int:
+    try:
+        so_config = load_sevone_config(client.config.sections)
+        properties = [str(p.get("name")) for p in list_properties(client)]
+        _check_property_names(list(so_config.mapping), properties)
+        print(f"Please wait... reading SevOne {so_config.url}.")
+        devices = sevone_fetch_records(SevOneClient(so_config))
+    except SevOneError as e:
+        raise UsageError(str(e)) from e
+    domain = args.domain if args.domain is not None else so_config.domain
+    header, rows = sevone_import_rows(devices.records, so_config, domain)
+    scope = f"groups {', '.join(so_config.device_groups)}" if so_config.device_groups else "all groups"
+    print(f"{devices.total} SevOne devices ({scope}), {len(devices.records)} kept -> domain {domain}")
+    for name, reason in _limited(devices.skipped, args.verbose):
+        print(f"  left aside: {name}: {reason}")
+    if not args.verbose and len(devices.skipped) > DETAIL_LIMIT:
+        print(f"    ... and {len(devices.skipped) - DETAIL_LIMIT} more (use -v)")
+    overwrite = args.overwrite or so_config.overwrite
+    if not overwrite:
+        print("SevOne only fills empty properties (--overwrite to replace QRadar values)")
+    if args.save_csv:
+        write_csv(args.save_csv, header, (row.values for row in rows))
+        print(f"Import rows saved to {args.save_csv}")
+    args.domain = None
+    args.fill_empty_only = args.fill_empty_only or not overwrite
+    return run_import(client, args, header, rows)
+
+
 def run_import(client: QRadarClient, args: argparse.Namespace, header: List[str], rows: List[ImportRow]) -> int:
     """Plan, print and (with --apply) write an import, whatever the source of the rows."""
     host = client.config.host
@@ -712,7 +743,7 @@ def _delimiter(value: str) -> str:
 
 
 def _add_import_options(parser: argparse.ArgumentParser) -> None:
-    """Write options shared by the import and netbox-sync commands."""
+    """Write options shared by the import and the sync commands."""
     parser.add_argument("--apply", action="store_true", help="Write to QRadar (default: dry run)")
     parser.add_argument(
         "--allow-create", action="store_true", help="Create the assets QRadar does not know (if this QRadar allows it)"
@@ -850,6 +881,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_import_options(pfsense)
     pfsense.set_defaults(handler=cmd_pfsense_sync)
+
+    sevone = subparsers.add_parser(
+        "sevone-sync",
+        help="Fill asset properties from the devices monitored by IBM SevOne NPM",
+        description="Read the SevOne devices (sevone section of the config) with their device types and metadata, "
+        "and import them as assets. SevOne only fills empty properties unless --overwrite. Without --apply, only "
+        "shows what would change (dry run).",
+    )
+    sevone.add_argument(
+        "--domain", metavar="ID|NAME", help="QRadar domain of the SevOne devices (default: sevone.domain)"
+    )
+    sevone.add_argument("--save-csv", metavar="FILE", help="Also save the generated import rows to this CSV file")
+    sevone.add_argument(
+        "--overwrite", action="store_true", help="Replace QRadar values (default: only fill empty properties)"
+    )
+    _add_import_options(sevone)
+    sevone.set_defaults(handler=cmd_sevone_sync)
 
     restore = subparsers.add_parser(
         "restore",

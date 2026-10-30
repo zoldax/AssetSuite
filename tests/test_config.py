@@ -122,6 +122,8 @@ def test_config_example_is_valid_and_generic():
 
     from assetsuite.netbox import load_netbox_config
     from assetsuite.pfsense import load_pfsense_config
+    from assetsuite.sevone import DEFAULT_MAPPING as SEVONE_MAPPING
+    from assetsuite.sevone import load_sevone_config
 
     path = pathlib.Path(__file__).resolve().parent.parent / "config.example.json"
     text = path.read_text(encoding="utf-8")
@@ -129,6 +131,8 @@ def test_config_example_is_valid_and_generic():
     assert config.host.endswith(".example.lan")
     netbox = load_netbox_config(config.sections, {"NETBOX_TOKEN": "t"})
     assert netbox.url.endswith(".example.lan")
+    sevone = load_sevone_config(config.sections, {"SEVONE_TOKEN": "t"})
+    assert sevone.url.endswith(".example.lan") and list(sevone.mapping) == list(SEVONE_MAPPING)
     documentation = [ipaddress.ip_network(n) for n in ("192.0.2.0/24", "198.51.100.0/24", "203.0.113.0/24")]
     networks = load_pfsense_config(config.sections).networks
     assert networks and all(any(n.subnet_of(d) for d in documentation) for n in networks)

@@ -183,3 +183,17 @@ def test_pfsense_sync_dry_run(run, workdir):
     assert "pfSense only fills empty properties" in out and "Dry run: nothing was written" in out
     assert len(csv_rows(workdir / "pf.csv")) == len(csv_rows(workdir / "pf-report.csv"))
     assert not (workdir / "safety").exists()
+
+
+def test_sevone_sync_dry_run(run, workdir, live_config):
+    from assetsuite.sevone import SevOneError, load_sevone_config
+
+    try:
+        load_sevone_config(live_config.sections)
+    except SevOneError as e:
+        pytest.skip(f"SevOne not configured: {e}")
+    code, out, err = run("sevone-sync", "--allow-create", "--report", "so-report.csv", "--save-csv", "so.csv")
+    assert code == EXIT_OK, out + err
+    assert "SevOne only fills empty properties" in out and "Dry run: nothing was written" in out
+    assert len(csv_rows(workdir / "so.csv")) == len(csv_rows(workdir / "so-report.csv"))
+    assert not (workdir / "safety").exists()

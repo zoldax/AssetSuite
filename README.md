@@ -4,7 +4,7 @@
 
 AssetSuite helps manage the IBM QRadar asset model from the command line: export assets, update their properties in bulk from CSV, report on asset data quality, and cross-check assets against the Network Hierarchy managed with [NHSuite](https://github.com/zoldax/NHSuite).
 
-> **Status: v0.7.2.** Connection and API capability checks, property and saved search listing, asset export to CSV/JSON, import (property updates and creation of missing assets) with dry run, safety backup and restore, NetBox IPAM and pfSense DNS/DHCP synchronization, data quality report cross-checked with the Network Hierarchy, unit and live test suites.
+> **Status: v0.8.0.** Connection and API capability checks, property and saved search listing, asset export to CSV/JSON, import (property updates and creation of missing assets) with dry run, safety backup and restore, NetBox IPAM, pfSense DNS/DHCP and IBM SevOne NPM synchronization, data quality report cross-checked with the Network Hierarchy, unit and live test suites.
 
 > ⚠️ **Before we go further: AssetSuite is NOT meant to be installed on a QRadar console or any QRadar appliance.** It runs from an admin workstation or a small Linux VM and only talks to QRadar through the REST API. Installing it, or its Python packages, on QRadar is unsupported by IBM and can break QRadar components. [Details below](#-installation).
 
@@ -18,11 +18,11 @@ AssetSuite helps manage the IBM QRadar asset model from the command line: export
 
 ## 📦 Installation
 
-**Run AssetSuite from an admin workstation or a small Linux VM with Python 3.9 or later, not on the QRadar console.** AssetSuite only talks to the QRadar REST API (and to NetBox), like NHSuite, so it does not need to be on QRadar:
+**Run AssetSuite from an admin workstation or a small Linux VM with Python 3.9 or later, not on the QRadar console.** AssetSuite only talks to the QRadar REST API (and to NetBox or SevOne), like NHSuite, so it does not need to be on QRadar:
 - the console's system Python (3.6 on QRadar 7.5/7.6, RHEL 8) is too old: AssetSuite needs 3.9+, and on 3.6 `requests` would be stuck at 2.27.1, without its later security fixes;
 - installing packages into that Python can break QRadar components, is not supported by IBM, and may be undone by a QRadar upgrade.
 
-The machine needs HTTPS access to the console (and to NetBox), the PEM of the internal CA if the certificates come from one, and the `config.json` holding the token. On RHEL 8/9: `sudo dnf install python3.11`, then create the virtual environment below with `python3.11 -m venv .venv`. On macOS, prefer a recent Python (e.g. Homebrew) to `/usr/bin/python3`, which is built with LibreSSL 2.8.3 (urllib3 `NotOpenSSLWarning`, no TLS 1.3).
+The machine needs HTTPS access to the console (and to NetBox or SevOne), the PEM of the internal CA if the certificates come from one, and the `config.json` holding the token. On RHEL 8/9: `sudo dnf install python3.11`, then create the virtual environment below with `python3.11 -m venv .venv`. On macOS, prefer a recent Python (e.g. Homebrew) to `/usr/bin/python3`, which is built with LibreSSL 2.8.3 (urllib3 `NotOpenSSLWarning`, no TLS 1.3).
 
 ```bash
 python3 -m venv .venv
@@ -47,6 +47,7 @@ python3 AssetSuite.py import FILE      # update asset properties / create missin
 python3 AssetSuite.py restore BACKUP   # put back the values saved before an import (dry run by default)
 python3 AssetSuite.py netbox-sync      # update / create assets from the NetBox IPAM (dry run by default)
 python3 AssetSuite.py pfsense-sync     # name assets from pfSense DNS overrides and static DHCP mappings (dry run by default)
+python3 AssetSuite.py sevone-sync      # fill assets from the devices monitored by IBM SevOne NPM (dry run by default)
 python3 AssetSuite.py report           # data quality report, cross-checked with the Network Hierarchy
 ```
 
@@ -246,6 +247,35 @@ Fields available for the mapping: `ip`, `dns_name`, `host`, `mac`, `dns_descript
 
 Matching ties (an IP held by several assets) are broken by the row's MAC first, then by its names in order: the asset that carries the pfSense MAC is the physical device, even when another asset carries the DNS name.
 
+### `sevone-sync`
+
+Reads the devices monitored by **IBM SevOne NPM** (REST API, read only), with their device types and metadata (SNMP system values, `Device.*` and `Location.*` attributes), turns them into one import row per device and runs them through the import (dry run, `--apply`, `--allow-create`, backup, report, `restore`). **SevOne only fills empty properties** unless `--overwrite` (or `sevone.overwrite: true`), so it completes NetBox without contradicting it.
+
+```bash
+python3 AssetSuite.py sevone-sync                          # dry run: what SevOne would fill in QRadar
+python3 AssetSuite.py sevone-sync --save-csv sevone.csv    # also keep the generated rows
+python3 AssetSuite.py sevone-sync --apply                  # fill the empty properties of the matching assets
+```
+
+**API key**: SevOne authenticates with an API key sent in the `X-AUTH-TOKEN` header. Create it once with `POST /api/v3/users/apikey` (body `{"application": "AssetSuite"}`, signed in as a read-only user, e.g. from the API docs page of SevOne) and copy the `apiKey` of the answer. Creating a new key for the same application replaces the previous one, which then gets HTTP 401.
+
+**Configuration** (`sevone` section of `config.json`, see `config.example.json`): `url`, `token` (the API key; `SEVONE_TOKEN` overrides it), `verify_ssl` / `ssl_cert_path`, `domain` (QRadar domain of the devices, `DEFAULT_DOMAIN` by default, `--domain` overrides it), `device_groups` (only the devices of these groups, by name, path such as `All Device Groups/NAS Devices`, or id; all devices by default), `overwrite`, `mapping`.
+
+| Default QRadar property | SevOne |
+|---|---|
+| `Given Name` | device name |
+| `Description` | device description, else `Device.Description` |
+| `Location` | `Location.Site Name`, else SNMP `sysLocation` |
+| `Asset Type` | first device type outside the `Generic` branch (`Storage/Synology` -> `Storage`), else `Device.Class` (`Host`, `Printer`) |
+| `Technical Contact` | SNMP `sysContact` |
+| `User Supplied OS` | `Device.OS Family` + `Device.OS Version` (`Linux 5.10.55`) |
+
+Fields available for the mapping: `ip`, `name`, `alternate_name`, `description`, `device_description`, `sys_name`, `dns_name`, `device_type`, `device_types`, `device_class`, `vendor`, `model`, `os`, `os_family`, `os_version`, `site`, `sys_location`, `sys_contact`, `tenant`, `status`, and `md:<Namespace.Attribute>` for any other metadata attribute (e.g. `md:Device.Serial Number`). SevOne's `Unknown` counts as empty.
+
+- Assets are matched by the device IP. The SNMP `sysName` is also used as DNS name (ties, creations) when it is a fully qualified name.
+- Devices polled on a loopback address (HTTP or DNS probes, SevOne itself) and deleted devices are left aside and listed.
+- Reads are two requests per device (metadata, device types): use `device_groups` to limit a large SevOne.
+
 ## 🛠 Configuration: `config.json`
 
 | Key | Default | Description |
@@ -274,8 +304,8 @@ Create an authorized service with a security profile covering the domains to man
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                                     # 217 unit tests, QRadar and NetBox APIs mocked
-ASSETSUITE_LIVE=1 pytest tests/live        # 18 read-only tests against the QRadar (NetBox, pfSense backups) of config.json
+pytest                                     # 243 unit tests, QRadar, NetBox and SevOne APIs mocked
+ASSETSUITE_LIVE=1 pytest tests/live        # 19 read-only tests against the QRadar (NetBox, SevOne, pfSense backups) of config.json
 ASSETSUITE_LIVE=1 ASSETSUITE_LIVE_WRITE=1 pytest tests/live   # + a write test on a temporary asset
 ruff check .                               # lint
 ```
@@ -292,6 +322,6 @@ Exit codes, error messages, their causes and fixes: [README-ERROR.md](README-ERR
 
 This software is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement. In no event shall the authors or contributors be held liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use of this software. See the [LICENSE](LICENSE) (Apache 2.0, sections 7 and 8).
 
-Use at your own risk. AssetSuite can create, modify and delete assets in QRadar: run a dry run first, test in a lab before production, and keep the safety backups. A restore cannot fully undo an import, as the QRadar API cannot empty a property. By using this software, you acknowledge that you assume all responsibility and potential risks associated with its usage, including compliance with the license and terms of IBM QRadar and of any connected product (NetBox, pfSense).
+Use at your own risk. AssetSuite can create, modify and delete assets in QRadar: run a dry run first, test in a lab before production, and keep the safety backups. A restore cannot fully undo an import, as the QRadar API cannot empty a property. By using this software, you acknowledge that you assume all responsibility and potential risks associated with its usage, including compliance with the license and terms of IBM QRadar and of any connected product (NetBox, pfSense, SevOne).
 
-AssetSuite is an independent project, not affiliated with, endorsed or supported by IBM, Netgate or NetBox Labs. QRadar and IBM are trademarks or registered trademarks of International Business Machines Corp. pfSense is a trademark of Electric Sheep Fencing LLC (Netgate). NetBox is a trademark of NetBox Labs. All other trademarks are the property of their respective owners.
+AssetSuite is an independent project, not affiliated with, endorsed or supported by IBM, Netgate or NetBox Labs. QRadar, SevOne and IBM are trademarks or registered trademarks of International Business Machines Corp. pfSense is a trademark of Electric Sheep Fencing LLC (Netgate). NetBox is a trademark of NetBox Labs. All other trademarks are the property of their respective owners.

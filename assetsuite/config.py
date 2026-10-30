@@ -22,7 +22,7 @@ PLACEHOLDER_TOKEN = "CHANGE_ME"  # noqa: S105 - placeholder from config.example.
 LEGACY_KEYS = {"ip_QRadar": "host", "auth": "token", "Version": "api_version"}
 IGNORED_KEYS = {"Accept"}
 # Settings of other systems, kept as is for the integration that uses them.
-SECTIONS = ("netbox", "pfsense")
+SECTIONS = ("netbox", "pfsense", "sevone")
 
 ENV_OVERRIDES = {
     "QRADAR_HOST": "host",

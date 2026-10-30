@@ -84,5 +84,49 @@
                 ]
             }
         }
+    },
+    "sevone": {
+        "url": "https://sevone.example.lan",
+        "token": "CHANGE_ME",
+        "verify_ssl": true,
+        "ssl_cert_path": null,
+        "domain": "DEFAULT_DOMAIN",
+        "device_groups": [],
+        "overwrite": false,
+        "mapping": {
+            "Given Name": {
+                "first": [
+                    "name"
+                ]
+            },
+            "Description": {
+                "first": [
+                    "description",
+                    "device_description"
+                ]
+            },
+            "Location": {
+                "first": [
+                    "site",
+                    "sys_location"
+                ]
+            },
+            "Asset Type": {
+                "first": [
+                    "device_type",
+                    "device_class"
+                ]
+            },
+            "Technical Contact": {
+                "first": [
+                    "sys_contact"
+                ]
+            },
+            "User Supplied OS": {
+                "first": [
+                    "os"
+                ]
+            }
+        }
     }
 }

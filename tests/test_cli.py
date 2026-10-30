@@ -477,3 +477,44 @@ def test_pfsense_sync_dry_run_fills_empty_only(config_file, tmp_path, capsys):
     code = main(["-c", config_file, "pfsense-sync", "--file", os.path.join(fixtures, "missing.xml")])
     assert code == EXIT_CONFIG
     assert "pfSense backup file not found" in capsys.readouterr().err
+
+
+@responses.activate
+def test_sevone_sync_dry_run_fills_empty_only(config_file, tmp_path, capsys):
+    from tests.fixtures import WORKSTATION
+    from tests.test_sevone import SO, SO_TOKEN, attribute, device, types
+
+    data = json.loads(open(config_file).read())
+    data["sevone"] = {
+        "url": SO,
+        "token": SO_TOKEN,
+        "verify_ssl": False,
+        "mapping": {"Given Name": "name", "Business Owner": "sys_contact"},
+    }
+    with open(config_file, "w") as file:
+        json.dump(data, file)
+    mock_catalog()
+    mock_caps()
+    responses.get(f"{BASE}/asset_model/assets", json=[WORKSTATION])
+    devices = [device(1, "SevOne", "127.0.0.1"), device(6, "ws01", "192.0.2.143"), device(7, "new-01", "192.0.2.99")]
+    responses.get(f"{SO}/api/v2/devices", json={"content": devices, "totalPages": 1})
+    for device_id in (6, 7):
+        responses.get(f"{SO}/api/v2/devices/{device_id}/metadata", json={"{system}.sysContact": attribute("NOC")})
+        responses.get(f"{SO}/api/v3/devicetypes/members/{device_id}", json=types())
+    code = main(["-c", config_file, "sevone-sync", "--report", str(tmp_path / "report.csv")])
+    out = capsys.readouterr().out
+    assert code == EXIT_OK
+    assert "3 SevOne devices (all groups), 2 kept -> domain DEFAULT_DOMAIN" in out
+    assert "left aside: SevOne: polled on 127.0.0.1" in out
+    assert "SevOne only fills empty properties" in out
+    # WORKSTATION (192.0.2.143) already has Business Owner "SOC": only the empty Given Name is set.
+    assert "asset 2723 (192.0.2.143): Given Name: '' -> 'ws01'" in out
+    assert "Business Owner" not in out.split("Updates:")[1].split("\n")[1]
+    assert "Assets not found ...... 1" in out
+    assert writes(responses.calls) == []
+
+    data["sevone"]["token"] = "CHANGE_ME"
+    with open(config_file, "w") as file:
+        json.dump(data, file)
+    assert main(["-c", config_file, "sevone-sync"]) == EXIT_CONFIG
+    assert "'sevone.token' is not set" in capsys.readouterr().err
