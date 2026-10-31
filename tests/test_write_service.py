@@ -151,3 +151,16 @@ def test_restore_refused_before_any_write(client, tmp_path):
     with pytest.raises(ServiceError, match="Cannot delete assets"):
         run_restore(client, plan, delete_created=True)
     assert writes(responses.calls) == []
+
+
+@responses.activate
+def test_write_plan_stops_when_qradar_refuses_the_credentials(client):
+    """A revoked token or an ended session: the first refused write stops the others, nothing more is sent."""
+    mock_qradar()
+    mock_caps()
+    responses.post(f"{BASE}/asset_model/assets/2723", status=401, json={"message": "Authentication failed"})
+    context, _, plan = plan_for(client, (*UPDATES, CREATION))
+    result = write_plan(client, context, plan)
+    assert result.stopped and result.credentials_refused
+    assert [(o.asset_id, o.status, o.http_status) for o in result.outcomes] == [(2723, "failed", 401)]
+    assert [c.request.url for c in writes(responses.calls)] == [f"{BASE}/asset_model/assets/2723"]

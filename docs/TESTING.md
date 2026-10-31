@@ -14,7 +14,7 @@ ASSETSUITE_LIVE=1 pytest tests/live                 # read-only live tests
 ASSETSUITE_LIVE=1 ASSETSUITE_LIVE_WRITE=1 pytest tests/live   # + the write test
 ```
 
-## Unit tests (272)
+## Unit tests (273)
 
 The mocked responses follow what QRadar 7.6.0 FP1 returns (shapes checked on the lab), with anonymized values (RFC 5737 IPs, `example.lan` names).
 
@@ -33,7 +33,7 @@ The mocked responses follow what QRadar 7.6.0 FP1 returns (shapes checked on the
 | `test_netbox.py` | 17 | NetBox config and mapping rules, records from IPs / devices / VMs, `-` as empty DNS name, pagination through `next`, Token / Bearer, errors, only assigned devices and VMs fetched | Longest-prefix lookup, outside NH, domain mismatch, `network_id` change, catch-all groups and sub-groups, empty networks, API without `Range`, NHSuite CSV |
 | `test_sevone.py` | 30 | SevOne config and mapping rules (`md:` metadata fields), metadata flattening (`Unknown` as empty), device types without the `Generic` branch, loopback / deleted devices left aside, FQDN `sysName` as DNS name, v2 pagination, device group filter (name, path, id), X-AUTH-TOKEN, errors, GET only, service account (sign-in, session renewed once, sign-out, errors) |
 | `test_progress.py` | 12 | Progress and cancellation through the core (QRadar `Content-Range` total, cancel between pages, NetBox / SevOne phases, planner rows), `config_from_mapping`, service layer behind the commands (import plan phases and GET only, report, errors), pfSense backups counted |
-| `test_write_service.py` | 5 | Write services shared with the QRadar App: plan fingerprint (changes with a new value and with an asset changed in QRadar), safety backup in a given folder before any write, updates then bulk creations recorded in the backup, clean stop between two assets, restore plan and run with deletion, other host and missing delete right refused before any write |
+| `test_write_service.py` | 6 | Write services shared with the QRadar App: plan fingerprint (changes with a new value and with an asset changed in QRadar), safety backup in a given folder before any write, updates then bulk creations recorded in the backup, clean stop between two assets, stop at the first write refused for its credentials (HTTP 401), restore plan and run with deletion, other host and missing delete right refused before any write |
 | `test_tls_env.py` | 6 | With `REQUESTS_CA_BUNDLE` set (e.g. by a container), the TLS settings still win: `verify_ssl: false` and `ssl_cert_path` for QRadar, NetBox and SevOne |
 | `test_cli.py` | 31 | Every command end to end on a mocked API: exit codes, dry run sends no write, backup before apply, invalid rows block apply, restore, report files and `--fail-on` |
 

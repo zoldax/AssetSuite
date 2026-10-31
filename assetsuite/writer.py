@@ -12,7 +12,9 @@ creation returns a task that is polled until it completes.
 Each loop takes an optional Progress: one item done per asset (per chunk in
 bulk), and a stop asked only before the next asset or chunk is sent, never
 while QRadar works on a bulk task. A stopped loop returns the outcomes of what
-was sent, so the caller can report and back up exactly that.
+was sent, so the caller can report and back up exactly that. A loop also
+stops when QRadar refuses the credentials (HTTP 401: token revoked, session
+ended): every following write would be refused too.
 
 Copyright 2026 Pascal Weber (zoldax) / Abakus Sécurité
 Licensed under the Apache License, Version 2.0 (see LICENSE).
@@ -44,6 +46,7 @@ MIN_POLL_INTERVAL = 5.0  # recommended by the API documentation
 # The property update, bulk PATCH and DELETE endpoints only answer in text/plain:
 # QRadar refuses them with HTTP 406 when the request asks for JSON.
 TEXT_RESPONSE = {"Accept": "text/plain"}
+CREDENTIALS_REFUSED = 401
 
 
 @dataclass
@@ -53,10 +56,19 @@ class Outcome:
     asset_id: Optional[int]
     status: str  # submitted | created | reconciled | deleted | failed | timeout
     message: str = ""
+    http_status: Optional[int] = None  # of a failure, when QRadar answered
 
     @property
     def failed(self) -> bool:
         return self.status in ("failed", "timeout")
+
+
+def _refused(e: Exception) -> bool:
+    """True when QRadar refused the credentials: the loop stops, the next writes would be refused too."""
+    if getattr(e, "status", None) == CREDENTIALS_REFUSED:
+        logger.error("QRadar refused the credentials (HTTP 401): the remaining writes are not sent")
+        return True
+    return False
 
 
 # --- Backup ------------------------------------------------------------------
@@ -120,7 +132,9 @@ def apply_updates(client: QRadarClient, plan: ImportPlan, progress: Optional[Pro
             outcomes.append(Outcome(line, "update", update.asset_id, "submitted", names))
         except QRadarAPIError as e:
             logger.error("Update of asset %s failed: %s", update.asset_id, e)
-            outcomes.append(Outcome(line, "update", update.asset_id, "failed", str(e)))
+            outcomes.append(Outcome(line, "update", update.asset_id, "failed", str(e), e.status))
+            if _refused(e):
+                break
         progress.advance()
     return outcomes
 
@@ -150,7 +164,9 @@ def create_one_by_one(
             outcomes.append(Outcome(creation.line, "create", body.get("id"), status, creation.label))
         except (QRadarAPIError, ValueError) as e:
             logger.error("Creation from line %s failed: %s", creation.line, e)
-            outcomes.append(Outcome(creation.line, "create", None, "failed", str(e)))
+            outcomes.append(Outcome(creation.line, "create", None, "failed", str(e), getattr(e, "status", None)))
+            if _refused(e):
+                break
         progress.advance()
     return outcomes
 
@@ -203,8 +219,10 @@ def create_in_bulk(
                 logger.warning("Bulk of %d assets refused as too large, retrying by %d", len(chunk), half)
                 queue[0:0] = [chunk[:half], chunk[half:]]
                 continue
-            outcomes.extend(Outcome(c.line, "create", None, "failed", str(e)) for c in chunk)
+            outcomes.extend(Outcome(c.line, "create", None, "failed", str(e), e.status) for c in chunk)
             progress.advance(len(chunk))
+            if _refused(e):
+                break
             continue
 
         task_id = _task_id(response)
@@ -318,7 +336,9 @@ def apply_restore(
                 Outcome(None, "update", item.asset_id, "submitted", ", ".join(c.name for c in item.changes))
             )
         except QRadarAPIError as e:
-            outcomes.append(Outcome(None, "update", item.asset_id, "failed", str(e)))
+            outcomes.append(Outcome(None, "update", item.asset_id, "failed", str(e), e.status))
+            if _refused(e):
+                break
         progress.advance()
     return outcomes
 
@@ -334,6 +354,8 @@ def delete_assets(client: QRadarClient, asset_ids: Sequence[int], progress: Opti
             outcomes.append(Outcome(None, "delete", asset_id, "deleted"))
         except QRadarAPIError as e:
             status = "deleted" if e.status == 404 else "failed"  # already gone
-            outcomes.append(Outcome(None, "delete", asset_id, status, str(e)))
+            outcomes.append(Outcome(None, "delete", asset_id, status, str(e), e.status))
+            if _refused(e):
+                break
         progress.advance()
     return outcomes

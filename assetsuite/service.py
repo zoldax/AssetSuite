@@ -48,6 +48,7 @@ from assetsuite.sevone import fetch_records as sevone_fetch_records
 from assetsuite.sevone import import_rows as sevone_import_rows
 from assetsuite.system import list_domains
 from assetsuite.writer import (
+    CREDENTIALS_REFUSED,
     SAFETY_DIR,
     Outcome,
     RestoreItem,
@@ -347,6 +348,11 @@ class ApplyOutcome:
     @property
     def failed(self) -> List[Outcome]:
         return [o for o in self.outcomes if o.failed]
+
+    @property
+    def credentials_refused(self) -> bool:
+        """QRadar refused the token or session (HTTP 401) and the writes stopped there."""
+        return any(o.http_status == CREDENTIALS_REFUSED for o in self.outcomes)
 
     def counts(self) -> Dict[str, int]:
         """'<action> <status>' -> number of outcomes, e.g. 'update submitted': 3."""
