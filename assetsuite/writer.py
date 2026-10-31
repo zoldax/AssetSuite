@@ -54,13 +54,13 @@ class Outcome:
     line: Optional[int]
     action: str  # update | create | delete
     asset_id: Optional[int]
-    status: str  # submitted | created | reconciled | deleted | failed | timeout
+    status: str  # submitted | created | reconciled | deleted | failed | timeout | unknown
     message: str = ""
     http_status: Optional[int] = None  # of a failure, when QRadar answered
 
     @property
     def failed(self) -> bool:
-        return self.status in ("failed", "timeout")
+        return self.status in ("failed", "timeout", "unknown")
 
 
 def _refused(e: Exception) -> bool:
@@ -233,6 +233,8 @@ def create_in_bulk(
                 _wait_bulk_task(client, task_id, chunk, max(poll_interval, MIN_POLL_INTERVAL), timeout, sleep, clock)
             )
         progress.advance(len(chunk))
+        if any(o.http_status == CREDENTIALS_REFUSED for o in outcomes[-len(chunk) :]):
+            break
     return outcomes
 
 
@@ -262,6 +264,9 @@ def _wait_bulk_task(
         try:
             task = client.get(f"asset_model/asset_bulk_tasks/{task_id}") or {}
         except QRadarAPIError as e:
+            if _refused(e):  # QRadar took the chunk: whether the assets were created is not known
+                message = f"QRadar refused the credentials while following bulk task {task_id}: check it in QRadar"
+                return [Outcome(c.line, "create", None, "unknown", message, e.status) for c in chunk]
             return [Outcome(c.line, "create", None, "failed", f"bulk task {task_id}: {e}") for c in chunk]
         if task.get("status") in BULK_TASK_DONE:
             break

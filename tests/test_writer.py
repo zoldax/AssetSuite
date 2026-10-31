@@ -233,3 +233,22 @@ def test_text_plain_endpoints_ask_for_text(client):
         create_in_bulk(client, [creation(2, "198.51.100.1")], CATALOG, sleep=clock.sleep, clock=clock)[0].asset_id == 9
     )
     assert delete_assets(client, [9])[0].status == "deleted"
+
+
+@responses.activate
+def test_bulk_task_followed_until_the_credentials_are_refused(client):
+    """QRadar took the chunk, then refuses the token or session: the outcome is unknown and no chunk is sent after."""
+    clock = FakeClock()
+    responses.patch(f"{BASE}/asset_model/assets", status=202, headers={"Location": "/x/asset_bulk_tasks/t5"}, json={})
+    responses.get(f"{BASE}/asset_model/asset_bulk_tasks/t5", status=401, json={"message": "Authentication failed"})
+    outcomes = create_in_bulk(
+        client,
+        [creation(2, "198.51.100.1"), creation(3, "198.51.100.2")],
+        CATALOG,
+        chunk_size=1,
+        sleep=clock.sleep,
+        clock=clock,
+    )
+    assert [(o.line, o.status, o.http_status) for o in outcomes] == [(2, "unknown", 401)]
+    assert outcomes[0].failed and "check it in QRadar" in outcomes[0].message
+    assert len([c for c in responses.calls if c.request.method == "PATCH"]) == 1

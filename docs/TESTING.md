@@ -14,7 +14,7 @@ ASSETSUITE_LIVE=1 pytest tests/live                 # read-only live tests
 ASSETSUITE_LIVE=1 ASSETSUITE_LIVE_WRITE=1 pytest tests/live   # + the write test
 ```
 
-## Unit tests (273)
+## Unit tests (274)
 
 The mocked responses follow what QRadar 7.6.0 FP1 returns (shapes checked on the lab), with anonymized values (RFC 5737 IPs, `example.lan` names).
 
@@ -26,7 +26,7 @@ The mocked responses follow what QRadar 7.6.0 FP1 returns (shapes checked on the
 | `test_assets.py` | 18 | Timestamps, CIDR / seen / property filters, export rows (per asset, per IP), saved search lookup, `id IN` chunks |
 | `test_export.py` | 13 | CSV formula escaping, CSV and JSON writers, default paths |
 | `test_importer.py` | 49 | CSV reading (BOM, delimiters, unescaping), import template (plans without errors, documentation values only), column checks, matching order and ambiguity, tie-break by MAC then DNS / NETBIOS names in order, `--fill-empty-only`, assets without IP skipped, numeric comparison, per-IP rows merged, conflicting rows, creation limits, single and bulk payloads |
-| `test_writer.py` | 10 | Updates, single create (201 / 200 reconciled / errors), bulk task polling, split on "too large", 429 retry, timeout, `Accept: text/plain` on update / PATCH / DELETE, backup and restore planning, deletes |
+| `test_writer.py` | 11 | Updates, single create (201 / 200 reconciled / errors), bulk task polling, split on "too large", 429 retry, timeout, credentials refused while following a bulk task (outcome unknown, no chunk after), `Accept: text/plain` on update / PATCH / DELETE, backup and restore planning, deletes |
 | `test_quality.py` | 8 | Duplicates per domain, stale, unnamed, owners, vulnerable, ordering |
 | `test_network_hierarchy.py` | 9 |
 | `test_pfsense.py` | 25 | Partial (`<unbound>`, `<dhcpd>`) and complete (`<pfsense>`) backups, DNS and DHCP merged by IP, names and domains, MAC-only reservations, networks filter, `CATEGORY - text` descriptions, DOCTYPE / invalid / foreign files refused, clear error without `defusedxml`, config errors, rows; anonymized XML fixtures in `tests/fixtures/` |
