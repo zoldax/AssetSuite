@@ -98,3 +98,16 @@ def test_pagination_stops_when_range_ignored(small_page_client):
     responses.get(f"{BASE}/help/versions", json=[{"v": 1}, {"v": 2}, {"v": 3}])
     assert len(small_page_client.get_all("help/versions")) == 3
     assert len(responses.calls) == 1
+
+
+@responses.activate
+def test_read_only_client_refuses_writes(config):
+    from assetsuite.client import QRadarAPIError, QRadarClient
+
+    client = QRadarClient(config, read_only=True)
+    responses.get(f"{BASE}/help/versions", json=[])
+    assert client.get("help/versions") == []
+    for method in ("POST", "PATCH", "DELETE", "PUT"):
+        with pytest.raises(QRadarAPIError, match="Read-only client"):
+            client.request(method, "asset_model/assets")
+    assert len(responses.calls) == 1

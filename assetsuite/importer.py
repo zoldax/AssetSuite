@@ -25,6 +25,7 @@ from typing import Dict, List, Mapping, Optional, Sequence, Tuple
 
 from assetsuite.assets import iter_ips, parse_ip, property_values
 from assetsuite.export import FORMULA_PREFIXES
+from assetsuite.progress import Progress, or_none
 
 IDENTITY_COLUMNS = (
     "id",
@@ -268,7 +269,7 @@ class Planner:
         if key and key != NO_HOSTNAME and asset not in index[key]:
             index[key].append(asset)
 
-    def plan(self, header: Sequence[str], rows: Sequence[ImportRow]) -> ImportPlan:
+    def plan(self, header: Sequence[str], rows: Sequence[ImportRow], progress: Optional[Progress] = None) -> ImportPlan:
         unknown = [
             c for c in header if c not in IDENTITY_COLUMNS and c not in READ_ONLY_COLUMNS and c not in self.catalog
         ]
@@ -282,12 +283,16 @@ class Planner:
                 f"The file needs at least one of these columns to find assets: {', '.join(MATCH_COLUMNS)}"
             )
 
+        progress = or_none(progress)
+        progress.set_total(len(rows))
         plan = ImportPlan(header=list(header), property_columns=[c for c in header if c in self.catalog])
         for row in rows:
+            progress.check_cancelled()
             try:
                 self._plan_row(plan, row)
             except RowError as e:
                 plan.errors.append(RowIssue(row.line, str(e)))
+            progress.advance()
         return plan
 
     def _plan_row(self, plan: ImportPlan, row: ImportRow) -> None:

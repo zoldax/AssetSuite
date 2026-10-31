@@ -111,7 +111,16 @@ def load_config(path: Optional[str] = None, environ: Optional[Mapping[str, str]]
         raw = _read_file(path)
     elif os.path.exists(DEFAULT_CONFIG_FILE):
         raw = _read_file(DEFAULT_CONFIG_FILE)
+    return config_from_mapping(raw, environ)
 
+
+def config_from_mapping(raw: Mapping[str, Any], environ: Optional[Mapping[str, str]] = None) -> Config:
+    """
+    Build a Config from already loaded settings (config file content, or the
+    settings store of the QRadar App) and the environment, which wins.
+    """
+    environ = os.environ if environ is None else environ
+    raw = dict(raw)
     sections = {key: raw.pop(key) for key in SECTIONS if key in raw}
     for key, section in sections.items():
         if not isinstance(section, dict):

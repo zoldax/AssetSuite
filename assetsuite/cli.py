@@ -28,41 +28,45 @@ from assetsuite.assets import (
     list_saved_searches,
     saved_search_asset_ids,
 )
-from assetsuite.capabilities import CREATE_ASSET, DELETE_ASSET, FEATURES, UPDATE_ASSET, detect_capabilities
+from assetsuite.capabilities import DELETE_ASSET, FEATURES, UPDATE_ASSET, detect_capabilities
 from assetsuite.client import QRadarAPIError, QRadarClient
 from assetsuite.config import Config, ConfigError, load_config
 from assetsuite.export import default_export_path, write_csv, write_json
-from assetsuite.importer import ImportFileError, ImportPlan, ImportRow, Planner, read_import_file
-from assetsuite.netbox import NetBoxClient, NetBoxError, fetch_records, load_netbox_config
-from assetsuite.netbox import import_rows as netbox_import_rows
-from assetsuite.network_hierarchy import (
-    NetworkHierarchyError,
-    NHIndex,
-    check_network_hierarchy,
-    load_from_api,
-    load_from_nhsuite_csv,
-)
-from assetsuite.pfsense import PfSenseError, build_records, load_pfsense_config, read_backups, resolve_files
-from assetsuite.pfsense import import_rows as pfsense_import_rows
+from assetsuite.importer import ImportFileError, ImportPlan, ImportRow, read_import_file
 from assetsuite.quality import (
     CHECKS as QUALITY_CHECKS,
 )
 from assetsuite.quality import (
-    NH_CHECKS,
     SEVERITIES,
     Finding,
-    ReportOptions,
-    check_assets,
     severity_rank,
-    sort_findings,
     summary,
 )
-from assetsuite.sevone import SevOneClient, SevOneError, load_sevone_config
-from assetsuite.sevone import fetch_records as sevone_fetch_records
-from assetsuite.sevone import import_rows as sevone_import_rows
+from assetsuite.service import (
+    REPORT_COLUMNS,
+    REPORT_FINDING_COLUMNS,
+    ServiceError,
+    SyncSource,
+    changes_text,
+    check_property_names,
+    finding_rows,
+    load_netbox,
+    load_pfsense,
+    load_sevone,
+    netbox_source,
+    parse_checks,
+    pfsense_source,
+    plan_import,
+    prepare_import,
+    prepare_report,
+    report_payload,
+    report_rows,
+    resolve_domain,
+    run_report,
+    sevone_source,
+)
 from assetsuite.system import get_system_about, list_domains
 from assetsuite.writer import (
-    Outcome,
     apply_restore,
     apply_updates,
     backup_path,
@@ -83,7 +87,7 @@ EXIT_FINDINGS = 3
 logger = logging.getLogger("assetsuite")
 
 
-class UsageError(Exception):
+class UsageError(ServiceError):
     """Invalid command-line value, detected after argument parsing."""
 
 
@@ -200,21 +204,6 @@ def cmd_saved_searches(client: QRadarClient, args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def _resolve_domain(ref: str, domains: Sequence[dict]) -> int:
-    for domain in domains:
-        if ref == str(domain.get("id")) or ref.casefold() == str(domain.get("name") or "").casefold():
-            return int(domain["id"])
-    known = ", ".join(f"{d.get('id')} ({d.get('name')})" for d in domains)
-    raise UsageError(f"Unknown domain '{ref}'. Known domains: {known}")
-
-
-def _check_property_names(names: Sequence[str], known: Sequence[str]) -> None:
-    unknown = [name for name in names if name not in known]
-    if unknown:
-        label = "properties" if len(unknown) > 1 else "property"
-        raise UsageError(f"Unknown asset {label}: {', '.join(unknown)} (see the properties command)")
-
-
 def _parse_networks(values: Sequence[str]) -> List[IPNetwork]:
     try:
         return [ipaddress.ip_network(value, strict=False) for value in values]
@@ -243,8 +232,8 @@ def cmd_export(client: QRadarClient, args: argparse.Namespace) -> int:
         else known_properties
     )
     property_filters = _parse_property_filters(args.property)
-    _check_property_names(property_columns, known_properties)
-    _check_property_names(list(property_filters), known_properties)
+    check_property_names(property_columns, known_properties)
+    check_property_names(list(property_filters), known_properties)
 
     asset_filter = AssetFilter(
         networks=_parse_networks(args.cidr),
@@ -255,7 +244,7 @@ def cmd_export(client: QRadarClient, args: argparse.Namespace) -> int:
 
     domains = list_domains(client)
     domain_names = {int(d["id"]): str(d.get("name") or "") for d in domains if d.get("id") is not None}
-    domain_id = _resolve_domain(args.domain, domains) if args.domain is not None else None
+    domain_id = resolve_domain(args.domain, domains) if args.domain is not None else None
 
     asset_ids = None
     if args.saved_search is not None:
@@ -286,7 +275,6 @@ def cmd_export(client: QRadarClient, args: argparse.Namespace) -> int:
 
 
 DETAIL_LIMIT = 20
-REPORT_COLUMNS = ["line", "action", "asset_id", "target", "details", "status", "message"]
 
 
 def _limited(items: Sequence, verbose: bool) -> Sequence:
@@ -296,10 +284,6 @@ def _limited(items: Sequence, verbose: bool) -> Sequence:
 def _more(items: Sequence, verbose: bool) -> None:
     if not verbose and len(items) > DETAIL_LIMIT:
         print(f"    ... and {len(items) - DETAIL_LIMIT} more (see the report, or use -v)")
-
-
-def _changes_text(changes) -> str:
-    return "; ".join(f"{c.name}: '{c.old}' -> '{c.new}'" for c in changes)
 
 
 def _print_plan(plan: ImportPlan, rows: int, verbose: bool) -> None:
@@ -316,7 +300,7 @@ def _print_plan(plan: ImportPlan, rows: int, verbose: bool) -> None:
     if updates:
         print("\nUpdates:")
         for u in _limited(updates, verbose):
-            print(f"  line {u.lines[0]:<5} asset {u.asset_id} ({u.label}): {_changes_text(u.changes.values())}")
+            print(f"  line {u.lines[0]:<5} asset {u.asset_id} ({u.label}): {changes_text(u.changes.values())}")
         _more(updates, verbose)
     if plan.creations:
         print("\nCreations:")
@@ -339,152 +323,70 @@ def _print_plan(plan: ImportPlan, rows: int, verbose: bool) -> None:
         _more(plan.errors, verbose)
 
 
-def _report_rows(plan: ImportPlan, outcomes: Sequence[Outcome] = ()) -> List[Dict[str, object]]:
-    updated = {o.asset_id: o for o in outcomes if o.action == "update"}
-    created = {o.line: o for o in outcomes if o.action == "create"}
-    rows: List[Dict[str, object]] = []
-    for u in plan.updates.values():
-        outcome = updated.get(u.asset_id)
-        rows.append(
-            {
-                "line": ";".join(str(line) for line in u.lines),
-                "action": "update",
-                "asset_id": u.asset_id,
-                "target": u.label,
-                "details": _changes_text(u.changes.values()),
-                "status": outcome.status if outcome else "planned",
-                "message": outcome.message if outcome and outcome.failed else "",
-            }
-        )
-    for c in plan.creations:
-        outcome = created.get(c.line)
-        rows.append(
-            {
-                "line": c.line,
-                "action": "create",
-                "asset_id": outcome.asset_id if outcome else "",
-                "target": c.label,
-                "details": "; ".join(f"{k}={v}" for k, v in c.properties.items()),
-                "status": outcome.status if outcome else "planned",
-                "message": outcome.message if outcome and outcome.status != "created" else "",
-            }
-        )
-    rows += [{"line": line, "action": "unchanged", "asset_id": asset_id} for line, asset_id in plan.unchanged]
-    rows += [{"line": row.line, "action": "not_found", "message": reason} for row, reason in plan.not_found]
-    rows += [
-        {"line": line, "action": "skipped", "asset_id": asset_id, "message": reason}
-        for line, asset_id, reason in plan.skipped
-    ]
-    rows += [{"line": issue.line, "action": "error", "message": issue.message} for issue in plan.errors]
-    return sorted(rows, key=lambda r: int(str(r["line"]).split(";")[0] or 0))
-
-
 def cmd_import(client: QRadarClient, args: argparse.Namespace) -> int:
     header, rows = read_import_file(args.file, args.delimiter)
     return run_import(client, args, header, rows)
 
 
-def cmd_netbox_sync(client: QRadarClient, args: argparse.Namespace) -> int:
-    try:
-        nb_config = load_netbox_config(client.config.sections)
-        properties = [str(p.get("name")) for p in list_properties(client)]
-        _check_property_names(list(nb_config.mapping), properties)
-        print(f"Please wait... reading NetBox {nb_config.url}.")
-        records = fetch_records(NetBoxClient(nb_config))
-    except NetBoxError as e:
-        raise UsageError(str(e)) from e
-    domain = args.domain if args.domain is not None else nb_config.domain
-    header, rows = netbox_import_rows(records, nb_config, domain)
-    print(f"{len(records)} NetBox IP addresses (status {', '.join(nb_config.statuses) or 'any'}) -> domain {domain}")
-    if args.save_csv:
-        write_csv(args.save_csv, header, (row.values for row in rows))
-        print(f"Import rows saved to {args.save_csv}")
+def _save_rows(path: Optional[str], source: SyncSource) -> None:
+    if path:
+        write_csv(path, source.header, (row.values for row in source.rows))
+        print(f"Import rows saved to {path}")
+
+
+def _run_source(client: QRadarClient, args: argparse.Namespace, source: SyncSource) -> int:
+    _save_rows(args.save_csv, source)
     # The rows already carry their domain.
     args.domain = None
-    return run_import(client, args, header, rows)
+    args.fill_empty_only = args.fill_empty_only or source.fill_empty_only
+    return run_import(client, args, source.header, source.rows)
+
+
+def cmd_netbox_sync(client: QRadarClient, args: argparse.Namespace) -> int:
+    nb_config = load_netbox(client)
+    print(f"Please wait... reading NetBox {nb_config.url}.")
+    source = netbox_source(nb_config, args.domain)
+    statuses = ", ".join(nb_config.statuses) or "any"
+    print(f"{source.kept} NetBox IP addresses (status {statuses}) -> domain {source.domain}")
+    return _run_source(client, args, source)
 
 
 def cmd_pfsense_sync(client: QRadarClient, args: argparse.Namespace) -> int:
-    try:
-        pf_config = load_pfsense_config(client.config.sections)
-        properties = [str(p.get("name")) for p in list_properties(client)]
-        _check_property_names(list(pf_config.mapping), properties)
-        files = resolve_files(args.file or pf_config.files)
-        entries = read_backups(files)
-    except PfSenseError as e:
-        raise UsageError(str(e)) from e
-    records = build_records(entries, pf_config)
-    domain = args.domain if args.domain is not None else pf_config.domain
-    header, rows = pfsense_import_rows(records, pf_config, domain)
+    pf_config = load_pfsense(client)
+    source = pfsense_source(pf_config, args.file, args.domain, args.overwrite)
     networks = ", ".join(map(str, pf_config.networks)) or "all networks"
     print(
-        f"{len(entries)} pfSense IP addresses in {len(files)} file(s), "
-        f"{len(records)} kept ({networks}) -> domain {domain}"
+        f"{source.read} pfSense IP addresses in {len(source.files)} file(s), "
+        f"{source.kept} kept ({networks}) -> domain {source.domain}"
     )
-    overwrite = args.overwrite or pf_config.overwrite
-    if not overwrite:
+    if source.fill_empty_only:
         print("pfSense only fills empty properties (--overwrite to replace QRadar values)")
-    if args.save_csv:
-        write_csv(args.save_csv, header, (row.values for row in rows))
-        print(f"Import rows saved to {args.save_csv}")
-    args.domain = None
-    args.fill_empty_only = args.fill_empty_only or not overwrite
-    return run_import(client, args, header, rows)
+    return _run_source(client, args, source)
 
 
 def cmd_sevone_sync(client: QRadarClient, args: argparse.Namespace) -> int:
-    try:
-        so_config = load_sevone_config(client.config.sections)
-        properties = [str(p.get("name")) for p in list_properties(client)]
-        _check_property_names(list(so_config.mapping), properties)
-        print(f"Please wait... reading SevOne {so_config.url}.")
-        devices = sevone_fetch_records(SevOneClient(so_config))
-    except SevOneError as e:
-        raise UsageError(str(e)) from e
-    domain = args.domain if args.domain is not None else so_config.domain
-    header, rows = sevone_import_rows(devices.records, so_config, domain)
+    so_config = load_sevone(client)
+    print(f"Please wait... reading SevOne {so_config.url}.")
+    source = sevone_source(so_config, args.domain, args.overwrite)
     scope = f"groups {', '.join(so_config.device_groups)}" if so_config.device_groups else "all groups"
-    print(f"{devices.total} SevOne devices ({scope}), {len(devices.records)} kept -> domain {domain}")
-    for name, reason in _limited(devices.skipped, args.verbose):
+    print(f"{source.read} SevOne devices ({scope}), {source.kept} kept -> domain {source.domain}")
+    for name, reason in _limited(source.skipped, args.verbose):
         print(f"  left aside: {name}: {reason}")
-    if not args.verbose and len(devices.skipped) > DETAIL_LIMIT:
-        print(f"    ... and {len(devices.skipped) - DETAIL_LIMIT} more (use -v)")
-    overwrite = args.overwrite or so_config.overwrite
-    if not overwrite:
+    if not args.verbose and len(source.skipped) > DETAIL_LIMIT:
+        print(f"    ... and {len(source.skipped) - DETAIL_LIMIT} more (use -v)")
+    if source.fill_empty_only:
         print("SevOne only fills empty properties (--overwrite to replace QRadar values)")
-    if args.save_csv:
-        write_csv(args.save_csv, header, (row.values for row in rows))
-        print(f"Import rows saved to {args.save_csv}")
-    args.domain = None
-    args.fill_empty_only = args.fill_empty_only or not overwrite
-    return run_import(client, args, header, rows)
+    return _run_source(client, args, source)
 
 
 def run_import(client: QRadarClient, args: argparse.Namespace, header: List[str], rows: List[ImportRow]) -> int:
     """Plan, print and (with --apply) write an import, whatever the source of the rows."""
     host = client.config.host
-    catalog = list_properties(client)
-    domains = list_domains(client)
-    caps = detect_capabilities(client)
-    default_domain = _resolve_domain(args.domain, domains) if args.domain is not None else None
-
-    if not args.allow_create:
-        can_create, blocked = False, "not created, use --allow-create to create assets QRadar does not know"
-    else:
-        can_create, reason = caps.check(CREATE_ASSET)
-        blocked = f"not created, {reason}" if not can_create else ""
+    context = prepare_import(client, args.domain, args.allow_create)
+    catalog, domains, caps = context.catalog, context.domains, context.caps
 
     print("Please wait... reading assets.")
-    planner = Planner(
-        fetch_assets(client),
-        catalog,
-        domains,
-        default_domain,
-        can_create,
-        blocked,
-        fill_empty_only=args.fill_empty_only,
-    )
-    plan = planner.plan(header, rows)
+    planner, plan = plan_import(client, context, header, rows, fill_empty_only=args.fill_empty_only)
     _print_plan(plan, len(rows), args.verbose)
 
     report = args.report or default_export_path(host, "csv", prefix="import-report")
@@ -494,20 +396,20 @@ def run_import(client: QRadarClient, args: argparse.Namespace, header: List[str]
         print(f"\nRows of assets not found saved to {not_found_path}")
 
     if not args.apply:
-        write_csv(report, REPORT_COLUMNS, _report_rows(plan))
+        write_csv(report, REPORT_COLUMNS, report_rows(plan))
         print(f"Report: {report}")
         print("\nDry run: nothing was written to QRadar. Re-run with --apply to write.")
         return EXIT_OK
 
     if plan.errors and not args.skip_invalid:
-        write_csv(report, REPORT_COLUMNS, _report_rows(plan))
+        write_csv(report, REPORT_COLUMNS, report_rows(plan))
         raise UsageError(
             f"{len(plan.errors)} invalid rows: fix them, or use --skip-invalid to import the valid rows only"
         )
     if plan.updates and not caps.can_update_assets:
         raise UsageError(f"Cannot update assets: {caps.check(UPDATE_ASSET)[1]}")
     if not plan.has_writes:
-        write_csv(report, REPORT_COLUMNS, _report_rows(plan))
+        write_csv(report, REPORT_COLUMNS, report_rows(plan))
         print("\nNothing to write.")
         return EXIT_OK
 
@@ -537,7 +439,7 @@ def run_import(client: QRadarClient, args: argparse.Namespace, header: List[str]
         if backup and created_ids:
             record_created_assets(backup, created_ids)
 
-    write_csv(report, REPORT_COLUMNS, _report_rows(plan, outcomes))
+    write_csv(report, REPORT_COLUMNS, report_rows(plan, outcomes))
     counts: Dict[str, int] = {}
     for outcome in outcomes:
         key = f"{outcome.action} {outcome.status}"
@@ -573,7 +475,7 @@ def cmd_restore(client: QRadarClient, args: argparse.Namespace) -> int:
     to_restore = [item for item in items if item.changes]
     print(f"  Assets to restore ..... {len(to_restore)}")
     for item in _limited(to_restore, args.verbose):
-        print(f"  asset {item.asset_id}: {_changes_text(item.changes)}")
+        print(f"  asset {item.asset_id}: {changes_text(item.changes)}")
     _more(to_restore, args.verbose)
     for item in items:
         if item.cannot_clear:
@@ -602,16 +504,7 @@ def cmd_restore(client: QRadarClient, args: argparse.Namespace) -> int:
     return EXIT_ERROR if failed else EXIT_OK
 
 
-REPORT_FINDING_COLUMNS = ["severity", "check", "asset_id", "domain_id", "target", "names", "detail"]
 EXAMPLES_PER_CHECK = 5
-
-
-def _parse_checks(value: str) -> List[str]:
-    names = [name.strip() for name in value.split(",") if name.strip()]
-    unknown = [name for name in names if name not in QUALITY_CHECKS]
-    if unknown:
-        raise UsageError(f"Unknown check(s): {', '.join(unknown)}. Checks: {', '.join(QUALITY_CHECKS)}")
-    return names
 
 
 def _print_report(findings: Sequence[Finding], enabled: Sequence[str], verbose: bool) -> None:
@@ -636,74 +529,37 @@ def _print_report(findings: Sequence[Finding], enabled: Sequence[str], verbose: 
 
 
 def cmd_report(client: QRadarClient, args: argparse.Namespace) -> int:
-    enabled = _parse_checks(args.checks) if args.checks else list(QUALITY_CHECKS)
-    skipped = _parse_checks(args.skip) if args.skip else []
-    if args.no_nh:
-        skipped += list(NH_CHECKS)
-    enabled = [name for name in enabled if name not in skipped]
-    if not enabled:
-        raise UsageError("No check left to run")
-
-    known_properties = [str(p.get("name")) for p in list_properties(client)]
-    if args.owner_property:
-        owner_properties = args.owner_property
-        _check_property_names(owner_properties, known_properties)
-    else:
-        # Default owner properties missing from this QRadar are ignored rather than refused.
-        owner_properties = [name for name in ReportOptions.owner_properties if name in known_properties]
-        if not owner_properties and "no-owner" in enabled:
-            logger.warning("No owner property on this QRadar: no-owner check skipped")
-            enabled = [name for name in enabled if name != "no-owner"]
-    options = ReportOptions(
-        stale_days=args.stale_days, owner_properties=owner_properties, catch_all_groups=args.catch_all_group
+    checks = parse_checks(args.checks) if args.checks else None
+    skip = parse_checks(args.skip) if args.skip else []
+    setup = prepare_report(
+        client,
+        checks=checks,
+        skip=skip,
+        no_nh=args.no_nh,
+        owner_properties=args.owner_property,
+        stale_days=args.stale_days,
+        catch_all_groups=args.catch_all_group,
+        domain=args.domain,
     )
-
-    domains = list_domains(client)
-    domain_id = _resolve_domain(args.domain, domains) if args.domain is not None else None
     print("Please wait... reading assets.")
-    assets = fetch_assets(client, domain_id)
-    findings = check_assets(assets, options, set(enabled))
-
-    if any(name in NH_CHECKS for name in enabled):
-        try:
-            networks = load_from_nhsuite_csv(args.nh_file) if args.nh_file else load_from_api(client)
-        except NetworkHierarchyError as e:
-            raise UsageError(str(e)) from e
-        groups = {n.group for n in networks}
-        for group in options.catch_all_groups:
-            if not any(g == group or g.startswith(group + ".") for g in groups):
-                logger.warning("Catch-all group '%s' is not in the Network Hierarchy", group)
-        nh_findings = check_network_hierarchy(assets, NHIndex(networks), options, set(enabled))
-        if domain_id is not None:
-            nh_findings = [f for f in nh_findings if f.check != "empty-network" or f.domain_id in (None, domain_id)]
-        findings += nh_findings
-        source = args.nh_file or "QRadar"
-        print(f"{len(assets)} assets checked against {len(networks)} Network Hierarchy networks ({source}).\n")
+    outcome = run_report(client, setup, args.nh_file)
+    if outcome.networks is not None:
+        print(
+            f"{outcome.assets} assets checked against {outcome.networks} Network Hierarchy networks "
+            f"({outcome.nh_source}).\n"
+        )
     else:
-        print(f"{len(assets)} assets checked.\n")
+        print(f"{outcome.assets} assets checked.\n")
 
-    findings = sort_findings(findings)
-    _print_report(findings, enabled, args.verbose)
+    findings = outcome.findings
+    _print_report(findings, setup.enabled, args.verbose)
 
     output_format = args.format or ("json" if args.output and args.output.lower().endswith(".json") else "csv")
     output = args.output or default_export_path(client.config.host, output_format, prefix="report")
     if output_format == "json":
-        payload = {
-            "host": client.config.host,
-            "assets": len(assets),
-            "options": {
-                "stale_days": options.stale_days,
-                "owner_properties": list(owner_properties),
-                "catch_all_groups": list(options.catch_all_groups),
-                "checks": enabled,
-            },
-            "summary": {name: count for name, count in summary(findings).items() if name in enabled},
-            "findings": [{column: getattr(f, column) for column in REPORT_FINDING_COLUMNS} for f in findings],
-        }
-        write_json(output, [payload])
+        write_json(output, [report_payload(client.config.host, outcome)])
     else:
-        rows = ({column: getattr(f, column) for column in REPORT_FINDING_COLUMNS} for f in findings)
-        write_csv(output, REPORT_FINDING_COLUMNS, rows, delimiter=args.delimiter)
+        write_csv(output, REPORT_FINDING_COLUMNS, finding_rows(findings), delimiter=args.delimiter)
     print(f"\n{len(findings)} findings written to {output}")
 
     if args.fail_on:
@@ -974,7 +830,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     client = QRadarClient(config)
     try:
         return args.handler(client, args)
-    except (UsageError, LookupFailed, ImportFileError) as e:
+    except (ServiceError, LookupFailed, ImportFileError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return EXIT_CONFIG
     except QRadarAPIError as e:

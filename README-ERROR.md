@@ -159,8 +159,11 @@ Report status `reconciled`: QRadar merged the row into an existing asset (its id
 | Message | Fix |
 |---|---|
 | `SevOne is not configured` | Add the `sevone` section (see `config.example.json`) |
-| `'sevone.token' is not set` | Create an API key (`POST /api/v3/users/apikey`) and put its `apiKey` in `sevone.token` or `SEVONE_TOKEN` |
-| `SevOne refused the API key (HTTP 401/403)` | Key wrong, deleted, or replaced: a new key for the same application invalidates the previous one. Create one key, copy the `apiKey` of the answer, do not create it again |
+| `'sevone.token' is not set ... or a service account` | Put an API key in `sevone.token` / `SEVONE_TOKEN`, or a service account in `sevone.username` / `sevone.password` |
+| `'sevone.username' and 'sevone.password' go together` | Set both, or neither |
+| `SevOne refused the service account (HTTP 401)` | Wrong user name or password, or account disabled |
+| `SevOne refused the service account session (HTTP 403)` | The account cannot read the devices: give it a read-only role on the device groups |
+| `SevOne refused the API key (HTTP 401/403)` | Key wrong, deleted, expired, or replaced: a new key for the same application invalidates the previous one. Create one key with an expiration date (`POST /api/v2/users/api-keys`), or use a service account |
 | `Unknown sevone setting(s)` / `'sevone.overwrite' must be true or false` / `'sevone.device_groups' must be a list ...` | Fix the `sevone` section |
 | `sevone.mapping['X']: unknown field(s)` | Fields: see the README, or `md:<Namespace.Attribute>` for another metadata attribute |
 | `Unknown SevOne device group(s): X` | Name, path (`All Device Groups/...`) or id of a SevOne device group |

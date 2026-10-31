@@ -22,6 +22,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, Iterator, List, Mapping, Optional, Sequence, Tuple, Union
 
 from assetsuite.client import QRadarClient
+from assetsuite.progress import Progress, or_none
 
 IPNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
 
@@ -85,18 +86,27 @@ def saved_search_asset_ids(client: QRadarClient, search_id: int) -> List[int]:
 
 
 def fetch_assets(
-    client: QRadarClient, domain_id: Optional[int] = None, asset_ids: Optional[Sequence[int]] = None
+    client: QRadarClient,
+    domain_id: Optional[int] = None,
+    asset_ids: Optional[Sequence[int]] = None,
+    progress: Optional[Progress] = None,
 ) -> List[dict]:
     """All assets, optionally restricted to a domain and/or a set of ids (filtered by QRadar)."""
     domain_filter = f"domain_id = {int(domain_id)}" if domain_id is not None else None
     if asset_ids is None:
-        return client.get_all("asset_model/assets", params={"filter": domain_filter} if domain_filter else None)
+        params = {"filter": domain_filter} if domain_filter else None
+        return client.get_all("asset_model/assets", params=params, progress=progress)
 
+    progress = or_none(progress)
+    progress.set_total(len(asset_ids))
     assets: List[dict] = []
     for start in range(0, len(asset_ids), ID_CHUNK):
         chunk = ",".join(str(int(i)) for i in asset_ids[start : start + ID_CHUNK])
         conditions = [f"id IN ({chunk})"] + ([domain_filter] if domain_filter else [])
+        # The chunk is counted as a whole: per-page counts would not match the total of ids.
         assets.extend(client.get_all("asset_model/assets", params={"filter": " and ".join(conditions)}))
+        progress.advance(len(asset_ids[start : start + ID_CHUNK]))
+        progress.check_cancelled()
     return assets
 
 

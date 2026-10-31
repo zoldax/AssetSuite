@@ -20,6 +20,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 from assetsuite.config import Config
+from assetsuite.progress import Progress, or_none
 
 logger = logging.getLogger(__name__)
 
@@ -42,10 +43,12 @@ class QRadarAPIError(Exception):
 
 
 class QRadarClient:
-    def __init__(self, config: Config, session: Optional[requests.Session] = None):
+    def __init__(self, config: Config, session: Optional[requests.Session] = None, read_only: bool = False):
         self.config = config
         self.base_url = f"https://{config.host}/api"
         self.session = session or self._build_session()
+        # read_only: only GET is sent, any other method raises before reaching QRadar.
+        self.read_only = read_only
 
     def _build_session(self) -> requests.Session:
         session = requests.Session()
@@ -77,10 +80,20 @@ class QRadarClient:
         headers: Optional[Mapping[str, str]] = None,
     ) -> requests.Response:
         url = f"{self.base_url}/{path.lstrip('/')}"
+        if self.read_only and method.upper() != "GET":
+            raise QRadarAPIError(f"Read-only client: {method} {path} refused")
         logger.debug("%s %s params=%s", method, url, params)
         try:
+            # verify is passed on each request: a session-level value loses against REQUESTS_CA_BUNDLE
+            # (set in QRadar App containers), even verify=False.
             response = self.session.request(
-                method, url, params=params, json=json_body, headers=headers, timeout=self.config.timeout
+                method,
+                url,
+                params=params,
+                json=json_body,
+                headers=headers,
+                timeout=self.config.timeout,
+                verify=self.session.verify,
             )
         except requests.exceptions.SSLError as e:
             raise QRadarAPIError(f"TLS verification failed for {self.config.host}: {e}") from e
@@ -98,23 +111,32 @@ class QRadarClient:
         return self._json(self.request("POST", path, params=params, json_body=json_body), path)
 
     def iter_pages(
-        self, path: str, params: Optional[Mapping[str, Any]] = None, page_size: Optional[int] = None
+        self,
+        path: str,
+        params: Optional[Mapping[str, Any]] = None,
+        page_size: Optional[int] = None,
+        progress: Optional[Progress] = None,
     ) -> Iterator[Any]:
         """Yield every item of a list endpoint, fetching it page by page with the Range header."""
+        progress = or_none(progress)
         size = page_size or self.config.page_size
         start = 0
         while True:
+            progress.check_cancelled()
             end = start + size - 1
             response = self.request("GET", path, params=params, headers={"Range": f"items={start}-{end}"})
             items = self._json(response, path)
             if not isinstance(items, list):
                 raise QRadarAPIError(f"Expected a list from {path}, got {type(items).__name__}")
+            match = _CONTENT_RANGE.search(response.headers.get("Content-Range", ""))
+            if match and start == 0:
+                progress.set_total(int(match.group(3)))
+            progress.advance(len(items))
             yield from items
 
             # More items than requested means the Range header was ignored and everything came back.
             if not items or len(items) > size:
                 return
-            match = _CONTENT_RANGE.search(response.headers.get("Content-Range", ""))
             if match:
                 if end + 1 >= int(match.group(3)):
                     return
@@ -122,8 +144,10 @@ class QRadarClient:
                 return
             start = end + 1
 
-    def get_all(self, path: str, params: Optional[Mapping[str, Any]] = None) -> list:
-        return list(self.iter_pages(path, params=params))
+    def get_all(
+        self, path: str, params: Optional[Mapping[str, Any]] = None, progress: Optional[Progress] = None
+    ) -> list:
+        return list(self.iter_pages(path, params=params, progress=progress))
 
     @staticmethod
     def _json(response: requests.Response, path: str) -> Any:

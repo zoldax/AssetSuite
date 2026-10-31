@@ -29,6 +29,7 @@ import urllib3
 from assetsuite.config import PLACEHOLDER_TOKEN
 from assetsuite.importer import NO_HOSTNAME, ImportRow
 from assetsuite.mapping import MappingError, apply_rule, normalize_mapping
+from assetsuite.progress import Progress, or_none
 
 logger = logging.getLogger(__name__)
 
@@ -163,21 +164,29 @@ class NetBoxClient:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             logger.warning("TLS verification is disabled for NetBox %s", config.url)
 
-    def get_all(self, path: str, params: Optional[Mapping[str, Any]] = None) -> List[dict]:
+    def get_all(
+        self, path: str, params: Optional[Mapping[str, Any]] = None, progress: Optional[Progress] = None
+    ) -> List[dict]:
+        progress = or_none(progress)
         url: Optional[str] = f"{self.config.url}/api/{path.strip('/')}/"
         query: Optional[Dict[str, Any]] = {"limit": PAGE_SIZE, **(params or {})}
         results: List[dict] = []
         while url:
+            progress.check_cancelled()
             data = self._get(url, query)
             if not isinstance(data, dict) or not isinstance(data.get("results"), list):
                 raise NetBoxError(f"Unexpected answer from NetBox for {path}")
+            if query is not None and isinstance(data.get("count"), int):
+                progress.set_total(data["count"])
             results.extend(data["results"])
+            progress.advance(len(data["results"]))
             url, query = data.get("next"), None  # "next" already carries the query
         return results
 
     def _get(self, url: str, params: Optional[Mapping[str, Any]]) -> Any:
         try:
-            response = self.session.get(url, params=params, timeout=self.config.timeout)
+            # verify on each request: REQUESTS_CA_BUNDLE would override the session value, even False.
+            response = self.session.get(url, params=params, timeout=self.config.timeout, verify=self.session.verify)
         except requests.exceptions.SSLError as e:
             raise NetBoxError(f"TLS verification failed for NetBox: {e} (see netbox.verify_ssl / ssl_cert_path)") from e
         except requests.RequestException as e:
@@ -289,19 +298,25 @@ def _ip_sort_key(value: str) -> Tuple[int, int]:
 ID_CHUNK = 100  # ids per request when fetching devices and virtual machines
 
 
-def _by_ids(client: NetBoxClient, path: str, ids: Sequence[int]) -> List[dict]:
+def _by_ids(client: NetBoxClient, path: str, ids: Sequence[int], progress: Progress) -> List[dict]:
+    progress.set_total(len(ids))
     objects: List[dict] = []
     for start in range(0, len(ids), ID_CHUNK):
         objects += client.get_all(path, params={"id": list(ids[start : start + ID_CHUNK])})
+        progress.advance(len(ids[start : start + ID_CHUNK]))
     return objects
 
 
-def fetch_records(client: NetBoxClient) -> List[Dict[str, str]]:
+def fetch_records(client: NetBoxClient, progress: Optional[Progress] = None) -> List[Dict[str, str]]:
+    progress = or_none(progress)
     params = {"status": list(client.config.statuses)} if client.config.statuses else None
-    ips = client.get_all("ipam/ip-addresses", params=params)
+    progress.phase("NetBox IP addresses")
+    ips = client.get_all("ipam/ip-addresses", params=params, progress=progress)
     assigned = [ip.get("assigned_object") or {} for ip in ips]
     device_ids = sorted({(a.get("device") or {}).get("id") for a in assigned} - {None})
     vm_ids = sorted({(a.get("virtual_machine") or {}).get("id") for a in assigned} - {None})
-    devices = _by_ids(client, "dcim/devices", device_ids)
-    vms = _by_ids(client, "virtualization/virtual-machines", vm_ids)
+    progress.phase("NetBox devices", len(device_ids))
+    devices = _by_ids(client, "dcim/devices", device_ids, progress)
+    progress.phase("NetBox virtual machines", len(vm_ids))
+    vms = _by_ids(client, "virtualization/virtual-machines", vm_ids, progress)
     return build_records(ips, devices, vms)

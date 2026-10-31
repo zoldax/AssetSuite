@@ -14,14 +14,14 @@ ASSETSUITE_LIVE=1 pytest tests/live                 # read-only live tests
 ASSETSUITE_LIVE=1 ASSETSUITE_LIVE_WRITE=1 pytest tests/live   # + the write test
 ```
 
-## Unit tests (243)
+## Unit tests (266)
 
 The mocked responses follow what QRadar 7.6.0 FP1 returns (shapes checked on the lab), with anonymized values (RFC 5737 IPs, `example.lan` names).
 
 | File | Tests | Covers |
 |---|---|---|
 | `test_config.py` | 17 | JSON config, NHSuite keys, environment overrides, TLS verification rules (including the NHSuite case where `verify_ssl: true` without CA disabled verification), validation errors, token kept out of `repr` |
-| `test_client.py` | 10 | Headers, `Range` pagination with and without `Content-Range`, a server ignoring `Range`, QRadar error messages and hints, network errors |
+| `test_client.py` | 11 | Headers, `Range` pagination with and without `Content-Range`, a server ignoring `Range`, QRadar error messages and hints, network errors, read-only mode refusing every method but GET |
 | `test_capabilities.py` | 10 | API versions and asset endpoints from `/help`, features per pinned API version (create 24.0+, bulk 29.0+), `caller_has_access`, removed versions, `ILIKE` fallback |
 | `test_assets.py` | 18 | Timestamps, CIDR / seen / property filters, export rows (per asset, per IP), saved search lookup, `id IN` chunks |
 | `test_export.py` | 13 | CSV formula escaping, CSV and JSON writers, default paths |
@@ -31,7 +31,9 @@ The mocked responses follow what QRadar 7.6.0 FP1 returns (shapes checked on the
 | `test_network_hierarchy.py` | 9 |
 | `test_pfsense.py` | 25 | Partial (`<unbound>`, `<dhcpd>`) and complete (`<pfsense>`) backups, DNS and DHCP merged by IP, names and domains, MAC-only reservations, networks filter, `CATEGORY - text` descriptions, DOCTYPE / invalid / foreign files refused, clear error without `defusedxml`, config errors, rows; anonymized XML fixtures in `tests/fixtures/` |
 | `test_netbox.py` | 17 | NetBox config and mapping rules, records from IPs / devices / VMs, `-` as empty DNS name, pagination through `next`, Token / Bearer, errors, only assigned devices and VMs fetched | Longest-prefix lookup, outside NH, domain mismatch, `network_id` change, catch-all groups and sub-groups, empty networks, API without `Range`, NHSuite CSV |
-| `test_sevone.py` | 25 | SevOne config and mapping rules (`md:` metadata fields), metadata flattening (`Unknown` as empty), device types without the `Generic` branch, loopback / deleted devices left aside, FQDN `sysName` as DNS name, v2 pagination, device group filter (name, path, id), X-AUTH-TOKEN, errors, GET only |
+| `test_sevone.py` | 30 | SevOne config and mapping rules (`md:` metadata fields), metadata flattening (`Unknown` as empty), device types without the `Generic` branch, loopback / deleted devices left aside, FQDN `sysName` as DNS name, v2 pagination, device group filter (name, path, id), X-AUTH-TOKEN, errors, GET only, service account (sign-in, session renewed once, sign-out, errors) |
+| `test_progress.py` | 11 | Progress and cancellation through the core (QRadar `Content-Range` total, cancel between pages, NetBox / SevOne phases, planner rows), `config_from_mapping`, service layer behind the commands (import plan phases and GET only, report, errors) |
+| `test_tls_env.py` | 6 | With `REQUESTS_CA_BUNDLE` set (e.g. by a container), the TLS settings still win: `verify_ssl: false` and `ssl_cert_path` for QRadar, NetBox and SevOne |
 | `test_cli.py` | 31 | Every command end to end on a mocked API: exit codes, dry run sends no write, backup before apply, invalid rows block apply, restore, report files and `--fail-on` |
 
 Bugs these tests caught during development: two infinite pagination loops in mocks that returned a full page without `Content-Range` (fixed in the client: a page larger than requested ends the listing), a report crash on a QRadar without `Technical Owner`, wrong expectations on CSV escaping.

@@ -32,6 +32,7 @@ import urllib3
 from assetsuite.config import PLACEHOLDER_TOKEN
 from assetsuite.importer import ImportRow
 from assetsuite.mapping import MappingError, apply_rule, normalize_mapping
+from assetsuite.progress import Progress, or_none
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ class SevOneError(Exception):
 @dataclass(frozen=True)
 class SevOneConfig:
     url: str
-    token: str
+    token: str  # API key; empty when a service account (username / password) is used
     verify_ssl: bool = True
     ssl_cert_path: Optional[str] = None
     timeout: float = 30.0
@@ -109,6 +110,8 @@ class SevOneConfig:
     device_groups: Tuple[str, ...] = ()
     overwrite: bool = False
     mapping: Mapping[str, Mapping[str, Any]] = field(default_factory=lambda: dict(DEFAULT_MAPPING))
+    username: str = ""
+    password: str = ""
 
     @property
     def verify(self) -> Union[bool, str]:
@@ -117,22 +120,30 @@ class SevOneConfig:
         return self.ssl_cert_path or True
 
     def __repr__(self) -> str:
-        return f"SevOneConfig(url={self.url!r}, verify={self.verify!r})"
+        return f"SevOneConfig(url={self.url!r}, verify={self.verify!r}, username={self.username!r})"
 
 
 def load_sevone_config(
     sections: Optional[Mapping[str, Any]], environ: Optional[Mapping[str, str]] = None
 ) -> SevOneConfig:
-    """SevOne settings from the "sevone" section of config.json, SEVONE_URL / SEVONE_TOKEN winning."""
+    """SevOne settings from the "sevone" section of config.json, the SEVONE_* environment variables winning."""
     environ = os.environ if environ is None else environ
     raw = dict((sections or {}).get("sevone") or {})
-    for env_name, key in (("SEVONE_URL", "url"), ("SEVONE_TOKEN", "token"), ("SEVONE_SSL_CERT_PATH", "ssl_cert_path")):
+    for env_name, key in (
+        ("SEVONE_URL", "url"),
+        ("SEVONE_TOKEN", "token"),
+        ("SEVONE_USERNAME", "username"),
+        ("SEVONE_PASSWORD", "password"),
+        ("SEVONE_SSL_CERT_PATH", "ssl_cert_path"),
+    ):
         if environ.get(env_name):
             raw[key] = environ[env_name]
 
     known = {
         "url",
         "token",
+        "username",
+        "password",
         "verify_ssl",
         "ssl_cert_path",
         "timeout",
@@ -148,10 +159,14 @@ def load_sevone_config(
     if not url:
         raise SevOneError("SevOne is not configured: add a 'sevone' section with 'url' and 'token' to the config file")
     token = str(raw.get("token") or "")
-    if not token or token == PLACEHOLDER_TOKEN:
+    token = "" if token == PLACEHOLDER_TOKEN else token
+    username, password = str(raw.get("username") or ""), str(raw.get("password") or "")
+    if bool(username) != bool(password):
+        raise SevOneError("'sevone.username' and 'sevone.password' go together (service account)")
+    if not token and not username:
         raise SevOneError(
-            "'sevone.token' is not set: put a SevOne API key (POST /api/v3/users/apikey) "
-            "in the config file or SEVONE_TOKEN"
+            "'sevone.token' is not set: put a SevOne API key (POST /api/v3/users/apikey) in the config file or "
+            "SEVONE_TOKEN, or a service account in 'sevone.username' / 'sevone.password'"
         )
 
     verify_ssl = raw.get("verify_ssl", True)
@@ -191,31 +206,92 @@ def load_sevone_config(
         device_groups=tuple(str(g).strip("/") for g in groups),
         overwrite=overwrite,
         mapping=mapping,
+        username=username,
+        password=password,
     )
 
 
 class SevOneClient:
+    """
+    Reads SevOne with an API key, or with a service account: signed in on the
+    first request (the only POST), signed in again once if the session expires,
+    signed out by close().
+    """
+
     def __init__(self, config: SevOneConfig, session: Optional[requests.Session] = None):
         self.config = config
         self.session = session or requests.Session()
-        self.session.headers.update({"X-AUTH-TOKEN": config.token, "Accept": "application/json"})
+        self.session.headers.update({"Accept": "application/json"})
+        if config.token:
+            self.session.headers["X-AUTH-TOKEN"] = config.token
+        self.signed_in = False
         self.session.verify = config.verify
         if not config.verify_ssl:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
             logger.warning("TLS verification is disabled for SevOne %s", config.url)
 
-    def get(self, path: str, params: Optional[Mapping[str, Any]] = None) -> Any:
+    @property
+    def uses_account(self) -> bool:
+        return not self.config.token
+
+    def _send(self, method: str, path: str, **kwargs) -> requests.Response:
         url = f"{self.config.url}/{path.lstrip('/')}"
         try:
-            response = self.session.get(url, params=params, timeout=self.config.timeout)
+            # verify on each request: REQUESTS_CA_BUNDLE would override the session value, even False.
+            return self.session.request(method, url, timeout=self.config.timeout, verify=self.session.verify, **kwargs)
         except requests.exceptions.SSLError as e:
             raise SevOneError(f"TLS verification failed for SevOne: {e} (see sevone.verify_ssl / ssl_cert_path)") from e
         except requests.RequestException as e:
             raise SevOneError(f"Cannot reach SevOne {self.config.url}: {e}") from e
+
+    def sign_in(self) -> None:
+        response = self._send(
+            "POST",
+            "api/v2/authentication/signin",
+            json={"name": self.config.username, "password": self.config.password},
+        )
+        token = None
+        if response.status_code == 200:
+            try:
+                token = response.json().get("token")
+            except (ValueError, AttributeError):
+                token = None
+        if not token:
+            raise SevOneError(
+                f"SevOne refused the service account (HTTP {response.status_code}): "
+                "check sevone.username / sevone.password"
+            )
+        self.session.headers["X-AUTH-TOKEN"] = token
+        self.signed_in = True
+
+    def close(self) -> None:
+        """Sign out the service account session (an API key has nothing to close)."""
+        if not self.signed_in:
+            return
+        try:
+            self._send("DELETE", "api/v2/authentication/signout")
+        except SevOneError as e:
+            logger.warning("SevOne sign-out failed: %s", e)
+        self.session.headers.pop("X-AUTH-TOKEN", None)
+        self.signed_in = False
+
+    def get(self, path: str, params: Optional[Mapping[str, Any]] = None) -> Any:
+        url = f"{self.config.url}/{path.lstrip('/')}"
+        if self.uses_account and not self.signed_in:
+            self.sign_in()
+        response = self._send("GET", path, params=params)
+        if response.status_code == 401 and self.uses_account:
+            self.sign_in()  # the session expired: once more with a new one
+            response = self._send("GET", path, params=params)
         if response.status_code in (401, 403):
+            if self.uses_account:
+                raise SevOneError(
+                    f"SevOne refused the service account session (HTTP {response.status_code}): "
+                    "check the rights of sevone.username"
+                )
             raise SevOneError(
                 f"SevOne refused the API key (HTTP {response.status_code}): check sevone.token "
-                "(a key replaced by a new one for the same application is no longer valid)"
+                "(a key replaced by a new one for the same application, or expired, is no longer valid)"
             )
         if response.status_code >= 400:
             try:
@@ -229,14 +305,21 @@ class SevOneClient:
         except ValueError as e:
             raise SevOneError(f"Invalid JSON from SevOne on {url}") from e
 
-    def get_pages(self, path: str, params: Optional[Mapping[str, Any]] = None) -> List[dict]:
+    def get_pages(
+        self, path: str, params: Optional[Mapping[str, Any]] = None, progress: Optional[Progress] = None
+    ) -> List[dict]:
         """All the items of a paginated v2 listing (content / totalPages)."""
+        progress = or_none(progress)
         items: List[dict] = []
         for page in range(MAX_PAGES):
+            progress.check_cancelled()
             data = self.get(path, {**(params or {}), "page": page, "size": PAGE_SIZE})
             if not isinstance(data, dict) or not isinstance(data.get("content"), list):
                 raise SevOneError(f"Unexpected answer from SevOne for {path}")
+            if page == 0 and isinstance(data.get("totalElements"), int):
+                progress.set_total(data["totalElements"])
             items.extend(data["content"])
+            progress.advance(len(data["content"]))
             if not data["content"] or page + 1 >= int(data.get("totalPages") or 0):
                 return items
         raise SevOneError(f"SevOne listing {path} did not end after {MAX_PAGES} pages")
@@ -357,26 +440,33 @@ class SevOneDevices:
     total: int
 
 
-def fetch_records(client: SevOneClient) -> SevOneDevices:
-    devices = client.get_pages("api/v2/devices")
+def fetch_records(client: SevOneClient, progress: Optional[Progress] = None) -> SevOneDevices:
+    progress = or_none(progress)
+    progress.phase("SevOne devices")
+    devices = client.get_pages("api/v2/devices", progress=progress)
     total = len(devices)
     if client.config.device_groups:
-        groups = client.get_pages("api/v2/devicegroups", {"includeMembers": "true"})
+        progress.phase("SevOne device groups")
+        groups = client.get_pages("api/v2/devicegroups", {"includeMembers": "true"}, progress=progress)
         members, missing = _group_ids(groups, client.config.device_groups)
         if missing:
             raise SevOneError(f"Unknown SevOne device group(s): {', '.join(missing)}")
         devices = [d for d in devices if d.get("id") in members]
 
     records, skipped = [], []
+    progress.phase("SevOne device details", len(devices))
     for device in devices:
+        progress.check_cancelled()
         reason = skip_reason(device)
         if reason:
             skipped.append((str(device.get("name") or device.get("id")), reason))
+            progress.advance()
             continue
         metadata = flatten_metadata(client.get(f"api/v2/devices/{device['id']}/metadata"))
         types = client.get(f"api/v3/devicetypes/members/{device['id']}")
         definitions = types.get("deviceTypeDefinition") if isinstance(types, Mapping) else None
         records.append(build_record(device, metadata, device_types(definitions or [])))
+        progress.advance()
     return SevOneDevices(records, skipped, total)
 
 

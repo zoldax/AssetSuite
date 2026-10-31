@@ -88,6 +88,8 @@
     "sevone": {
         "url": "https://sevone.example.lan",
         "token": "CHANGE_ME",
+        "username": "",
+        "password": "",
         "verify_ssl": true,
         "ssl_cert_path": null,
         "domain": "DEFAULT_DOMAIN",

@@ -18,6 +18,7 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 from assetsuite.assets import format_datetime, iter_ips, last_seen, property_values
 from assetsuite.importer import NO_HOSTNAME, normalize_mac
+from assetsuite.progress import Progress, or_none
 
 SEVERITIES = ("high", "medium", "low", "info")
 
@@ -110,10 +111,15 @@ def check_duplicates(assets: Sequence[Mapping], enabled: Set[str]) -> List[Findi
     return findings
 
 
-def check_assets(assets: Sequence[Mapping], options: ReportOptions, enabled: Set[str]) -> List[Finding]:
+def check_assets(
+    assets: Sequence[Mapping], options: ReportOptions, enabled: Set[str], progress: Optional[Progress] = None
+) -> List[Finding]:
+    progress = or_none(progress)
+    progress.set_total(len(assets))
     findings = check_duplicates(assets, enabled)
     limit = options.now - timedelta(days=options.stale_days)
     for asset in assets:
+        progress.advance()
         values = property_values(asset)
         if "stale" in enabled:
             seen = last_seen(asset)

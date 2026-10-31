@@ -99,7 +99,12 @@ def mock_sevone(devices=DEVICES, pages=1):
     for page in range(pages):
         responses.get(
             f"{SO}/api/v2/devices",
-            json={"content": devices[page * size : (page + 1) * size], "totalPages": pages, "pageNumber": page},
+            json={
+                "content": devices[page * size : (page + 1) * size],
+                "totalElements": len(devices),
+                "totalPages": pages,
+                "pageNumber": page,
+            },
             match=[matchers.query_param_matcher({"page": str(page), "size": "200"})],
         )
     for device_id, metadata in METADATA.items():
@@ -257,3 +262,79 @@ def test_client_errors():
 
 def test_verify_disabled():
     assert SevOneClient(config(verify_ssl=False)).session.verify is False
+
+
+# --- Service account ---------------------------------------------------------
+
+
+def account(**extra):
+    return load_sevone_config(
+        {"sevone": {"url": SO, "username": "svc-assetsuite", "password": "s3cret", **extra}}, environ={}
+    )
+
+
+def test_service_account_config():
+    cfg = account()
+    assert (cfg.token, cfg.username, cfg.password) == ("", "svc-assetsuite", "s3cret")
+    assert "s3cret" not in repr(cfg)
+    from_env = load_sevone_config({"sevone": {"url": SO}}, environ={"SEVONE_USERNAME": "svc", "SEVONE_PASSWORD": "pw"})
+    assert (from_env.username, from_env.password) == ("svc", "pw")
+    with pytest.raises(SevOneError, match="go together"):
+        load_sevone_config({"sevone": {"url": SO, "username": "svc"}}, environ={})
+    with pytest.raises(SevOneError, match="or a service account"):
+        load_sevone_config({"sevone": {"url": SO, "token": "CHANGE_ME"}}, environ={})
+
+
+@responses.activate
+def test_service_account_signs_in_reads_and_signs_out():
+    from assetsuite.service import sevone_source
+
+    signin = responses.post(
+        f"{SO}/api/v2/authentication/signin",
+        json={"token": "session-1"},
+        match=[matchers.json_params_matcher({"name": "svc-assetsuite", "password": "s3cret"})],
+    )
+    responses.get(
+        f"{SO}/api/v2/devices",
+        json={"content": [], "totalElements": 0, "totalPages": 1},
+        match=[matchers.header_matcher({"X-AUTH-TOKEN": "session-1"})],
+    )
+    signout = responses.delete(
+        f"{SO}/api/v2/authentication/signout", match=[matchers.header_matcher({"X-AUTH-TOKEN": "session-1"})]
+    )
+    source = sevone_source(account())
+    assert source.read == 0
+    assert signin.call_count == 1 and signout.call_count == 1
+
+
+@responses.activate
+def test_service_account_session_renewed_once():
+    responses.post(f"{SO}/api/v2/authentication/signin", json={"token": "session-1"})
+    responses.post(f"{SO}/api/v2/authentication/signin", json={"token": "session-2"})
+    responses.get(
+        f"{SO}/api/v3/health/version", status=401, match=[matchers.header_matcher({"X-AUTH-TOKEN": "session-1"})]
+    )
+    responses.get(
+        f"{SO}/api/v3/health/version",
+        json={"version": "7.2.1"},
+        match=[matchers.header_matcher({"X-AUTH-TOKEN": "session-2"})],
+    )
+    client = SevOneClient(account())
+    assert client.get("api/v3/health/version") == {"version": "7.2.1"}
+
+
+@responses.activate
+def test_service_account_errors():
+    responses.post(f"{SO}/api/v2/authentication/signin", status=401, json={"title": "Unauthorized"})
+    with pytest.raises(SevOneError, match="refused the service account .HTTP 401.: check sevone.username"):
+        SevOneClient(account()).get("api/v2/devices")
+    responses.replace(responses.POST, f"{SO}/api/v2/authentication/signin", json={"token": "session-1"})
+    responses.get(f"{SO}/api/v2/devices", status=403, json={"title": "Forbidden"})
+    with pytest.raises(SevOneError, match="refused the service account session .HTTP 403.: check the rights"):
+        SevOneClient(account()).get("api/v2/devices")
+
+
+def test_api_key_client_has_nothing_to_close():
+    client = SevOneClient(config())
+    assert not client.uses_account
+    client.close()  # no request

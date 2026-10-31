@@ -4,7 +4,7 @@
 
 AssetSuite helps manage the IBM QRadar asset model from the command line: export assets, update their properties in bulk from CSV, report on asset data quality, and cross-check assets against the Network Hierarchy managed with [NHSuite](https://github.com/zoldax/NHSuite).
 
-> **Status: v0.8.0.** Connection and API capability checks, property and saved search listing, asset export to CSV/JSON, import (property updates and creation of missing assets) with dry run, safety backup and restore, NetBox IPAM, pfSense DNS/DHCP and IBM SevOne NPM synchronization, data quality report cross-checked with the Network Hierarchy, unit and live test suites.
+> **Status: v0.10.1.** Connection and API capability checks, property and saved search listing, asset export to CSV/JSON, import (property updates and creation of missing assets) with dry run, safety backup and restore, NetBox IPAM, pfSense DNS/DHCP and IBM SevOne NPM synchronization, data quality report cross-checked with the Network Hierarchy, unit and live test suites.
 
 > ⚠️ **Before we go further: AssetSuite is NOT meant to be installed on a QRadar console or any QRadar appliance.** It runs from an admin workstation or a small Linux VM and only talks to QRadar through the REST API. Installing it, or its Python packages, on QRadar is unsupported by IBM and can break QRadar components. [Details below](#-installation).
 
@@ -257,9 +257,13 @@ python3 AssetSuite.py sevone-sync --save-csv sevone.csv    # also keep the gener
 python3 AssetSuite.py sevone-sync --apply                  # fill the empty properties of the matching assets
 ```
 
-**API key**: SevOne authenticates with an API key sent in the `X-AUTH-TOKEN` header. Create it once with `POST /api/v3/users/apikey` (body `{"application": "AssetSuite"}`, signed in as a read-only user, e.g. from the API docs page of SevOne) and copy the `apiKey` of the answer. Creating a new key for the same application replaces the previous one, which then gets HTTP 401.
+**Authentication**, one of:
+- **Service account** (recommended for scheduled runs): a read-only SevOne user in `username` / `password` (`SEVONE_USERNAME` / `SEVONE_PASSWORD`). AssetSuite signs in on the first request (`POST /api/v2/authentication/signin`, the only POST sent to SevOne), signs in again once if the session expires, and signs out at the end.
+- **API key** in `token`, sent in the `X-AUTH-TOKEN` header. SevOne API keys expire: create one with an explicit expiration date with `POST /api/v2/users/api-keys` (body `{"applicationName": "AssetSuite", "expirationDate": <Unix time in ms>}`, signed in as the read-only user), and copy the `apiKey` of the answer. Creating a new key for the same application replaces the previous one, which then gets HTTP 401.
 
-**Configuration** (`sevone` section of `config.json`, see `config.example.json`): `url`, `token` (the API key; `SEVONE_TOKEN` overrides it), `verify_ssl` / `ssl_cert_path`, `domain` (QRadar domain of the devices, `DEFAULT_DOMAIN` by default, `--domain` overrides it), `device_groups` (only the devices of these groups, by name, path such as `All Device Groups/NAS Devices`, or id; all devices by default), `overwrite`, `mapping`.
+When both are set, the API key is used.
+
+**Configuration** (`sevone` section of `config.json`, see `config.example.json`): `url`, `token` (API key; `SEVONE_TOKEN`) or `username` / `password` (service account; `SEVONE_USERNAME` / `SEVONE_PASSWORD`), `verify_ssl` / `ssl_cert_path`, `domain` (QRadar domain of the devices, `DEFAULT_DOMAIN` by default, `--domain` overrides it), `device_groups` (only the devices of these groups, by name, path such as `All Device Groups/NAS Devices`, or id; all devices by default), `overwrite`, `mapping`.
 
 | Default QRadar property | SevOne |
 |---|---|
@@ -304,7 +308,7 @@ Create an authorized service with a security profile covering the domains to man
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                                     # 243 unit tests, QRadar, NetBox and SevOne APIs mocked
+pytest                                     # 266 unit tests, QRadar, NetBox and SevOne APIs mocked
 ASSETSUITE_LIVE=1 pytest tests/live        # 19 read-only tests against the QRadar (NetBox, SevOne, pfSense backups) of config.json
 ASSETSUITE_LIVE=1 ASSETSUITE_LIVE_WRITE=1 pytest tests/live   # + a write test on a temporary asset
 ruff check .                               # lint
