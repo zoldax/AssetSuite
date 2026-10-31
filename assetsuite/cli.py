@@ -28,11 +28,12 @@ from assetsuite.assets import (
     list_saved_searches,
     saved_search_asset_ids,
 )
-from assetsuite.capabilities import DELETE_ASSET, FEATURES, UPDATE_ASSET, detect_capabilities
+from assetsuite.capabilities import FEATURES, UPDATE_ASSET, detect_capabilities
 from assetsuite.client import QRadarAPIError, QRadarClient
 from assetsuite.config import Config, ConfigError, load_config
 from assetsuite.export import default_export_path, write_csv, write_json
 from assetsuite.importer import ImportFileError, ImportPlan, ImportRow, read_import_file
+from assetsuite.progress import Progress
 from assetsuite.quality import (
     CHECKS as QUALITY_CHECKS,
 )
@@ -59,24 +60,19 @@ from assetsuite.service import (
     plan_import,
     prepare_import,
     prepare_report,
+    prepare_restore,
     report_payload,
     report_rows,
     resolve_domain,
     run_report,
+    run_restore,
+    safety_backup,
     sevone_source,
+    write_plan,
 )
 from assetsuite.system import get_system_about, list_domains
 from assetsuite.writer import (
-    apply_restore,
-    apply_updates,
-    backup_path,
-    create_in_bulk,
-    create_one_by_one,
-    delete_assets,
-    plan_restore,
     read_backup,
-    record_created_assets,
-    write_backup,
 )
 
 EXIT_OK = 0
@@ -89,6 +85,13 @@ logger = logging.getLogger("assetsuite")
 
 class UsageError(ServiceError):
     """Invalid command-line value, detected after argument parsing."""
+
+
+class PrintNotes(Progress):
+    """Prints the notes of an operation (no progress bar on the command line)."""
+
+    def note(self, text: str) -> None:
+        print(text)
 
 
 def setup_logging(config: Config, verbose: bool) -> None:
@@ -383,7 +386,7 @@ def run_import(client: QRadarClient, args: argparse.Namespace, header: List[str]
     """Plan, print and (with --apply) write an import, whatever the source of the rows."""
     host = client.config.host
     context = prepare_import(client, args.domain, args.allow_create)
-    catalog, domains, caps = context.catalog, context.domains, context.caps
+    caps = context.caps
 
     print("Please wait... reading assets.")
     planner, plan = plan_import(client, context, header, rows, fill_empty_only=args.fill_empty_only)
@@ -415,9 +418,8 @@ def run_import(client: QRadarClient, args: argparse.Namespace, header: List[str]
 
     backup = None
     if client.config.safety:
-        backup = backup_path(host)
         try:
-            write_backup(backup, host, [planner.by_id[asset_id] for asset_id in plan.updates])
+            backup = safety_backup(client, planner, plan)
         except OSError as e:
             logger.error("Backup failed, import aborted: %s", e)
             return EXIT_ERROR
@@ -426,32 +428,17 @@ def run_import(client: QRadarClient, args: argparse.Namespace, header: List[str]
         print("\nSafety is off: no backup before import")
         logger.warning("Safety is off: no backup before import")
 
-    outcomes = apply_updates(client, plan)
-    if plan.creations:
-        catalog_by_name = {str(p["name"]): p for p in catalog}
-        if caps.can_bulk_assets:
-            print(f"Creating {len(plan.creations)} assets in bulk, this can take a few minutes...")
-            outcomes += create_in_bulk(client, plan.creations, catalog_by_name, chunk_size=args.bulk_size)
-        else:
-            domain_names = {int(d["id"]): str(d.get("name") or "") for d in domains}
-            outcomes += create_one_by_one(client, plan.creations, catalog_by_name, domain_names)
-        created_ids = [o.asset_id for o in outcomes if o.action == "create" and o.status == "created" and o.asset_id]
-        if backup and created_ids:
-            record_created_assets(backup, created_ids)
-
+    result = write_plan(client, context, plan, backup, bulk_size=args.bulk_size, progress=PrintNotes())
+    outcomes = result.outcomes
     write_csv(report, REPORT_COLUMNS, report_rows(plan, outcomes))
-    counts: Dict[str, int] = {}
-    for outcome in outcomes:
-        key = f"{outcome.action} {outcome.status}"
-        counts[key] = counts.get(key, 0) + 1
-    print("\nResult: " + ", ".join(f"{n} {key}" for key, n in sorted(counts.items())))
+    print("\nResult: " + ", ".join(f"{n} {key}" for key, n in sorted(result.counts().items())))
     print(f"Report: {report}")
     if plan.updates:
         print(
             "Property updates are applied asynchronously by QRadar: run the same import again without --apply "
             "in a few minutes to check that nothing is left to change."
         )
-    failed = [o for o in outcomes if o.failed]
+    failed = result.failed
     for outcome in _limited(failed, args.verbose):
         logger.error("line %s %s %s: %s", outcome.line, outcome.action, outcome.asset_id or "", outcome.message)
     return EXIT_ERROR if failed else EXIT_OK
@@ -462,17 +449,10 @@ def cmd_restore(client: QRadarClient, args: argparse.Namespace) -> int:
         backup = read_backup(args.backup)
     except (OSError, ValueError) as e:
         raise UsageError(f"Cannot read backup {args.backup}: {e}") from e
-    if backup.get("host") != client.config.host:
-        raise UsageError(f"The backup was made on {backup.get('host')}, not on {client.config.host}")
+    plan = prepare_restore(client, backup, args.delete_created)
+    items, created, missing, to_restore = plan.items, plan.created, plan.missing, plan.to_restore
 
-    ids = [int(a["id"]) for a in backup["assets"]]
-    current = fetch_assets(client, asset_ids=ids) if ids else []
-    items = plan_restore(backup, current, list_properties(client))
-    created = [int(i) for i in backup.get("created_asset_ids", [])]
-    missing = sorted(set(ids) - {int(a["id"]) for a in current})
-
-    print(f"Backup of {backup.get('created_at')}: {len(ids)} assets, {len(created)} created by the import")
-    to_restore = [item for item in items if item.changes]
+    print(f"Backup of {backup.get('created_at')}: {len(plan.asset_ids)} assets, {len(created)} created by the import")
     print(f"  Assets to restore ..... {len(to_restore)}")
     for item in _limited(to_restore, args.verbose):
         print(f"  asset {item.asset_id}: {changes_text(item.changes)}")
@@ -486,17 +466,13 @@ def cmd_restore(client: QRadarClient, args: argparse.Namespace) -> int:
         action = "will be deleted" if args.delete_created else "are kept (use --delete-created to delete them)"
         print(f"  Assets created by the import {action}: {', '.join(map(str, created))}")
 
-    if args.delete_created and created:
-        caps = detect_capabilities(client)
-        if not caps.can_delete_assets:
-            raise UsageError(f"Cannot delete assets: {caps.check(DELETE_ASSET)[1]}")
+    if plan.delete_blocked:
+        raise UsageError(f"Cannot delete assets: {plan.delete_blocked}")
     if not args.apply:
         print("\nDry run: nothing was written to QRadar. Re-run with --apply to restore.")
         return EXIT_OK
 
-    outcomes = apply_restore(client, to_restore)
-    if args.delete_created and created:
-        outcomes += delete_assets(client, created)
+    outcomes = run_restore(client, plan, args.delete_created).outcomes
     failed = [o for o in outcomes if o.failed]
     for outcome in failed:
         logger.error("%s asset %s failed: %s", outcome.action, outcome.asset_id, outcome.message)

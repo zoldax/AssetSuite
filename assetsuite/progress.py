@@ -47,3 +47,12 @@ NO_PROGRESS = Progress()
 
 def or_none(progress: Optional[Progress]) -> Progress:
     return progress if progress is not None else NO_PROGRESS
+
+
+def stop_requested(progress: Progress) -> bool:
+    """True if the user asked to stop, for loops that must end cleanly (writes) instead of raising Cancelled."""
+    try:
+        progress.check_cancelled()
+    except Cancelled:
+        return True
+    return False

@@ -193,3 +193,17 @@ def test_prepare_report_errors(client):
         prepare_report(client, checks=["stale"], skip=["stale"])
     with pytest.raises(ServiceError, match="Unknown asset property: Owner"):
         prepare_report(client, owner_properties=["Owner"])
+
+
+def test_pfsense_source_counts_the_backups():
+    import os
+
+    from assetsuite.pfsense import PfSenseConfig
+    from assetsuite.service import pfsense_source
+
+    fixtures = os.path.join(os.path.dirname(__file__), "fixtures")
+    files = [os.path.join(fixtures, name) for name in ("pfsense-unbound.xml", "pfsense-dhcpd.xml")]
+    progress = Recorder()
+    source = pfsense_source(PfSenseConfig(), files, progress=progress)
+    assert progress.events == [("phase", "pfSense backups", None), ("total", 2), ("advance", 2)]
+    assert source.files == files

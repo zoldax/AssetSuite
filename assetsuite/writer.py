@@ -9,6 +9,11 @@ Both property updates and bulk creations are asynchronous in QRadar: an
 update is accepted (202) and applied later by the asset profiler, a bulk
 creation returns a task that is polled until it completes.
 
+Each loop takes an optional Progress: one item done per asset (per chunk in
+bulk), and a stop asked only before the next asset or chunk is sent, never
+while QRadar works on a bulk task. A stopped loop returns the outcomes of what
+was sent, so the caller can report and back up exactly that.
+
 Copyright 2026 Pascal Weber (zoldax) / Abakus Sécurité
 Licensed under the Apache License, Version 2.0 (see LICENSE).
 """
@@ -26,6 +31,7 @@ from typing import Callable, Dict, List, Mapping, Optional, Sequence
 from assetsuite.assets import property_values
 from assetsuite.client import QRadarAPIError, QRadarClient
 from assetsuite.importer import Creation, ImportPlan, PropertyChange, creation_payload
+from assetsuite.progress import Progress, or_none, stop_requested
 
 logger = logging.getLogger(__name__)
 
@@ -56,8 +62,8 @@ class Outcome:
 # --- Backup ------------------------------------------------------------------
 
 
-def backup_path(host: str) -> str:
-    return os.path.join(SAFETY_DIR, f"backup-before-import-{host}-{datetime.now().strftime('%Y%m%d%H%M%S')}.json")
+def backup_path(host: str, directory: str = SAFETY_DIR) -> str:
+    return os.path.join(directory, f"backup-before-import-{host}-{datetime.now().strftime('%Y%m%d%H%M%S')}.json")
 
 
 def write_backup(path: str, host: str, assets: Sequence[Mapping]) -> None:
@@ -101,9 +107,12 @@ def update_properties(client: QRadarClient, asset_id: int, changes: Sequence[Pro
     client.request("POST", f"asset_model/assets/{asset_id}", json_body=body, headers=TEXT_RESPONSE)
 
 
-def apply_updates(client: QRadarClient, plan: ImportPlan) -> List[Outcome]:
+def apply_updates(client: QRadarClient, plan: ImportPlan, progress: Optional[Progress] = None) -> List[Outcome]:
+    progress = or_none(progress)
     outcomes = []
     for update in plan.updates.values():
+        if stop_requested(progress):
+            break
         line = update.lines[0] if update.lines else None
         names = ", ".join(update.changes)
         try:
@@ -112,6 +121,7 @@ def apply_updates(client: QRadarClient, plan: ImportPlan) -> List[Outcome]:
         except QRadarAPIError as e:
             logger.error("Update of asset %s failed: %s", update.asset_id, e)
             outcomes.append(Outcome(line, "update", update.asset_id, "failed", str(e)))
+        progress.advance()
     return outcomes
 
 
@@ -119,11 +129,18 @@ def apply_updates(client: QRadarClient, plan: ImportPlan) -> List[Outcome]:
 
 
 def create_one_by_one(
-    client: QRadarClient, creations: Sequence[Creation], catalog: Mapping[str, Mapping], domains: Mapping[int, str]
+    client: QRadarClient,
+    creations: Sequence[Creation],
+    catalog: Mapping[str, Mapping],
+    domains: Mapping[int, str],
+    progress: Optional[Progress] = None,
 ) -> List[Outcome]:
     """POST /asset_model/assets per asset (API 24.0+). 201 = created, 200 = reconciled with an existing asset."""
+    progress = or_none(progress)
     outcomes = []
     for creation in creations:
+        if stop_requested(progress):
+            break
         try:
             response = client.request(
                 "POST", "asset_model/assets", json_body=creation_payload(creation, catalog, domains, bulk=False)
@@ -134,6 +151,7 @@ def create_one_by_one(
         except (QRadarAPIError, ValueError) as e:
             logger.error("Creation from line %s failed: %s", creation.line, e)
             outcomes.append(Outcome(creation.line, "create", None, "failed", str(e)))
+        progress.advance()
     return outcomes
 
 
@@ -161,6 +179,7 @@ def create_in_bulk(
     timeout: float = 600.0,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
+    progress: Optional[Progress] = None,
 ) -> List[Outcome]:
     """
     PATCH /asset_model/assets (API 29.0+), then poll the bulk task.
@@ -168,9 +187,12 @@ def create_in_bulk(
     The maximum list size is not documented: a chunk refused as too large
     (422 code 1002) is split in two and sent again.
     """
+    progress = or_none(progress)
     outcomes: List[Outcome] = []
     queue = [list(creations[i : i + chunk_size]) for i in range(0, len(creations), chunk_size)]
     while queue:
+        if stop_requested(progress):
+            break
         chunk = queue.pop(0)
         body = [creation_payload(c, catalog, {}, bulk=True) for c in chunk]
         try:
@@ -182,15 +204,17 @@ def create_in_bulk(
                 queue[0:0] = [chunk[:half], chunk[half:]]
                 continue
             outcomes.extend(Outcome(c.line, "create", None, "failed", str(e)) for c in chunk)
+            progress.advance(len(chunk))
             continue
 
         task_id = _task_id(response)
         if not task_id:
             outcomes.extend(Outcome(c.line, "create", None, "failed", "QRadar returned no bulk task id") for c in chunk)
-            continue
-        outcomes.extend(
-            _wait_bulk_task(client, task_id, chunk, max(poll_interval, MIN_POLL_INTERVAL), timeout, sleep, clock)
-        )
+        else:
+            outcomes.extend(
+                _wait_bulk_task(client, task_id, chunk, max(poll_interval, MIN_POLL_INTERVAL), timeout, sleep, clock)
+            )
+        progress.advance(len(chunk))
     return outcomes
 
 
@@ -278,11 +302,16 @@ def plan_restore(backup: Mapping, current_assets: Sequence[Mapping], catalog: Se
     return items
 
 
-def apply_restore(client: QRadarClient, items: Sequence[RestoreItem]) -> List[Outcome]:
+def apply_restore(
+    client: QRadarClient, items: Sequence[RestoreItem], progress: Optional[Progress] = None
+) -> List[Outcome]:
+    progress = or_none(progress)
     outcomes = []
     for item in items:
         if not item.changes:
             continue
+        if stop_requested(progress):
+            break
         try:
             update_properties(client, item.asset_id, item.changes)
             outcomes.append(
@@ -290,16 +319,21 @@ def apply_restore(client: QRadarClient, items: Sequence[RestoreItem]) -> List[Ou
             )
         except QRadarAPIError as e:
             outcomes.append(Outcome(None, "update", item.asset_id, "failed", str(e)))
+        progress.advance()
     return outcomes
 
 
-def delete_assets(client: QRadarClient, asset_ids: Sequence[int]) -> List[Outcome]:
+def delete_assets(client: QRadarClient, asset_ids: Sequence[int], progress: Optional[Progress] = None) -> List[Outcome]:
+    progress = or_none(progress)
     outcomes = []
     for asset_id in asset_ids:
+        if stop_requested(progress):
+            break
         try:
             client.request("DELETE", f"asset_model/assets/{int(asset_id)}", headers=TEXT_RESPONSE)
             outcomes.append(Outcome(None, "delete", asset_id, "deleted"))
         except QRadarAPIError as e:
             status = "deleted" if e.status == 404 else "failed"  # already gone
             outcomes.append(Outcome(None, "delete", asset_id, status, str(e)))
+        progress.advance()
     return outcomes

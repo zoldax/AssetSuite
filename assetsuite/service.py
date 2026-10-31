@@ -3,7 +3,7 @@ service.py
 
 The operations behind the commands, without any printing: read a source of
 asset data (NetBox, SevOne, pfSense backups), plan an import against the
-QRadar assets, run the quality report. The CLI prints their results; the
+QRadar assets and write it, restore a safety backup, run the quality report. The CLI prints their results; the
 QRadar App runs them as background jobs and follows them with a Progress.
 
 Each operation is split where the CLI tells the user to wait (prepare, then
@@ -15,6 +15,8 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Dict, Iterator, List, Optional, Sequence, Tuple
@@ -22,7 +24,7 @@ from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 import requests
 
 from assetsuite.assets import fetch_assets, list_properties
-from assetsuite.capabilities import CREATE_ASSET, Capabilities, detect_capabilities
+from assetsuite.capabilities import CREATE_ASSET, DELETE_ASSET, Capabilities, detect_capabilities
 from assetsuite.client import QRadarClient
 from assetsuite.importer import ImportPlan, ImportRow, Planner
 from assetsuite.netbox import NetBoxClient, NetBoxConfig, NetBoxError, load_netbox_config
@@ -45,7 +47,20 @@ from assetsuite.sevone import SevOneClient, SevOneConfig, SevOneError, load_sevo
 from assetsuite.sevone import fetch_records as sevone_fetch_records
 from assetsuite.sevone import import_rows as sevone_import_rows
 from assetsuite.system import list_domains
-from assetsuite.writer import Outcome
+from assetsuite.writer import (
+    SAFETY_DIR,
+    Outcome,
+    RestoreItem,
+    apply_restore,
+    apply_updates,
+    backup_path,
+    create_in_bulk,
+    create_one_by_one,
+    delete_assets,
+    plan_restore,
+    record_created_assets,
+    write_backup,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +151,9 @@ def pfsense_source(
     progress.phase("pfSense backups")
     try:
         paths = pfsense_resolve_files(files or config.files)
+        progress.set_total(len(paths))
         entries = read_backups(paths)
+        progress.advance(len(paths))
     except PfSenseError as e:
         raise ServiceError(str(e)) from e
     records = build_records(entries, config)
@@ -287,6 +304,150 @@ def report_rows(plan: ImportPlan, outcomes: Sequence[Outcome] = ()) -> List[Dict
     ]
     rows += [{"line": issue.line, "action": "error", "message": issue.message} for issue in plan.errors]
     return sorted(rows, key=lambda r: int(str(r["line"]).split(";")[0] or 0))
+
+
+# --- Writes ------------------------------------------------------------------
+
+
+def _fingerprint(items: list) -> str:
+    return hashlib.sha256(json.dumps(items, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def plan_fingerprint(plan: ImportPlan) -> str:
+    """
+    SHA-256 of what a plan would write. The old values are part of it: an asset
+    changed in QRadar since a dry run gives another fingerprint, so a write
+    can be refused unless it is exactly the one that was reviewed.
+    """
+    items: list = [
+        ["update", u.asset_id, sorted([c.name, c.old, c.new] for c in u.changes.values())]
+        for u in sorted(plan.updates.values(), key=lambda u: u.asset_id)
+    ]
+    items += [
+        ["create", c.line, c.domain_id, c.ips, c.mac, c.dns, c.netbios, sorted(c.properties.items())]
+        for c in plan.creations
+    ]
+    return _fingerprint(items)
+
+
+def safety_backup(client: QRadarClient, planner: Planner, plan: ImportPlan, directory: str = SAFETY_DIR) -> str:
+    """Save the assets a plan updates, before writing. Returns the path; raises OSError if it cannot be written."""
+    host = client.config.host
+    path = backup_path(host, directory)
+    write_backup(path, host, [planner.by_id[asset_id] for asset_id in plan.updates])
+    return path
+
+
+@dataclass
+class ApplyOutcome:
+    outcomes: List[Outcome]
+    created_ids: List[int]
+    stopped: bool  # the user asked to stop: some planned writes were not sent
+
+    @property
+    def failed(self) -> List[Outcome]:
+        return [o for o in self.outcomes if o.failed]
+
+    def counts(self) -> Dict[str, int]:
+        """'<action> <status>' -> number of outcomes, e.g. 'update submitted': 3."""
+        counts: Dict[str, int] = {}
+        for outcome in self.outcomes:
+            key = f"{outcome.action} {outcome.status}"
+            counts[key] = counts.get(key, 0) + 1
+        return counts
+
+
+def write_plan(
+    client: QRadarClient,
+    context: ImportContext,
+    plan: ImportPlan,
+    backup: Optional[str] = None,
+    bulk_size: int = 100,
+    progress: Optional[Progress] = None,
+) -> ApplyOutcome:
+    """
+    Send the updates, then the creations, of a plan. The caller checks the plan
+    (invalid rows, rights) and makes the safety backup first; the assets created
+    are added to that backup, so a restore can delete them.
+    """
+    progress = or_none(progress)
+    progress.phase("Property updates", len(plan.updates))
+    outcomes = apply_updates(client, plan, progress)
+    created_ids: List[int] = []
+    if plan.creations and len(outcomes) == len(plan.updates):
+        progress.phase("Asset creations", len(plan.creations))
+        catalog_by_name = {str(p["name"]): p for p in context.catalog}
+        if context.caps.can_bulk_assets:
+            progress.note(f"Creating {len(plan.creations)} assets in bulk, this can take a few minutes...")
+            outcomes += create_in_bulk(client, plan.creations, catalog_by_name, chunk_size=bulk_size, progress=progress)
+        else:
+            domain_names = {int(d["id"]): str(d.get("name") or "") for d in context.domains}
+            outcomes += create_one_by_one(client, plan.creations, catalog_by_name, domain_names, progress)
+        created_ids = [o.asset_id for o in outcomes if o.action == "create" and o.status == "created" and o.asset_id]
+        if backup and created_ids:
+            record_created_assets(backup, created_ids)
+    stopped = len(outcomes) < len(plan.updates) + len(plan.creations)
+    return ApplyOutcome(outcomes, created_ids, stopped)
+
+
+@dataclass
+class RestorePlan:
+    backup: dict
+    items: List[RestoreItem]
+    created: List[int]  # assets created by the import
+    missing: List[int]  # assets of the backup gone since
+    delete_blocked: str = ""  # why the created assets cannot be deleted, when that was asked
+
+    @property
+    def asset_ids(self) -> List[int]:
+        return [int(a["id"]) for a in self.backup["assets"]]
+
+    @property
+    def to_restore(self) -> List[RestoreItem]:
+        return [item for item in self.items if item.changes]
+
+
+def prepare_restore(client: QRadarClient, backup: dict, delete_created: bool = False) -> RestorePlan:
+    """What a restore of a backup would change, read from the current assets. Writes nothing."""
+    if backup.get("host") != client.config.host:
+        raise ServiceError(f"The backup was made on {backup.get('host')}, not on {client.config.host}")
+    ids = [int(a["id"]) for a in backup["assets"]]
+    current = fetch_assets(client, asset_ids=ids) if ids else []
+    items = plan_restore(backup, current, list_properties(client))
+    created = [int(i) for i in backup.get("created_asset_ids", [])]
+    missing = sorted(set(ids) - {int(a["id"]) for a in current})
+    blocked = ""
+    if delete_created and created:
+        caps = detect_capabilities(client)
+        if not caps.can_delete_assets:
+            blocked = caps.check(DELETE_ASSET)[1]
+    return RestorePlan(backup, items, created, missing, blocked)
+
+
+def restore_fingerprint(plan: RestorePlan, delete_created: bool) -> str:
+    items: list = [
+        ["update", item.asset_id, sorted([c.name, c.old, c.new] for c in item.changes)] for item in plan.to_restore
+    ]
+    if delete_created:
+        items += [["delete", asset_id] for asset_id in sorted(plan.created)]
+    return _fingerprint(items)
+
+
+def run_restore(
+    client: QRadarClient, plan: RestorePlan, delete_created: bool = False, progress: Optional[Progress] = None
+) -> ApplyOutcome:
+    if delete_created and plan.created and plan.delete_blocked:
+        raise ServiceError(f"Cannot delete assets: {plan.delete_blocked}")
+    progress = or_none(progress)
+    to_restore = plan.to_restore
+    progress.phase("Restore", len(to_restore))
+    outcomes = apply_restore(client, to_restore, progress)
+    expected = len(to_restore)
+    if delete_created and plan.created and len(outcomes) == len(to_restore):
+        progress.phase("Delete created assets", len(plan.created))
+        outcomes += delete_assets(client, plan.created, progress)
+        expected += len(plan.created)
+    return ApplyOutcome(outcomes, [], len(outcomes) < expected)
 
 
 # --- Quality report ----------------------------------------------------------
