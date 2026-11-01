@@ -23,7 +23,7 @@ from typing import Dict, Iterator, List, Optional, Sequence, Tuple
 
 import requests
 
-from assetsuite.assets import fetch_assets, list_properties
+from assetsuite.assets import fetch_assets, format_datetime, last_seen, list_properties
 from assetsuite.capabilities import CREATE_ASSET, DELETE_ASSET, Capabilities, detect_capabilities
 from assetsuite.client import QRadarClient
 from assetsuite.importer import ImportPlan, ImportRow, Planner
@@ -516,6 +516,7 @@ class ReportOutcome:
     findings: List[Finding]
     networks: Optional[int] = None  # Network Hierarchy networks checked, None without NH checks
     nh_source: str = ""
+    last_seen: Dict[int, str] = field(default_factory=dict)  # assets with a finding: last sighting, "" never seen
 
 
 def run_report(
@@ -547,6 +548,8 @@ def run_report(
         findings += nh_findings
         outcome.networks, outcome.nh_source = len(networks), nh_file or "QRadar"
     outcome.findings = sort_findings(findings)
+    with_findings = {f.asset_id for f in outcome.findings}
+    outcome.last_seen = {a["id"]: format_datetime(last_seen(a)) for a in assets if a.get("id") in with_findings}
     return outcome
 
 
@@ -568,4 +571,5 @@ def report_payload(host: str, outcome: ReportOutcome) -> dict:
         },
         "summary": {name: count for name, count in summary(outcome.findings).items() if name in setup.enabled},
         "findings": list(finding_rows(outcome.findings)),
+        "last_seen": {str(asset_id): seen for asset_id, seen in outcome.last_seen.items()},
     }

@@ -4,7 +4,7 @@
 
 AssetSuite helps manage the IBM QRadar asset model from the command line: export assets, update their properties in bulk from CSV, report on asset data quality, and cross-check assets against the Network Hierarchy managed with [NHSuite](https://github.com/zoldax/NHSuite).
 
-> **Status: v0.11.2.** Connection and API capability checks, property and saved search listing, asset export to CSV/JSON, import (property updates and creation of missing assets) with dry run, safety backup and restore, NetBox IPAM, pfSense DNS/DHCP and IBM SevOne NPM synchronization, data quality report cross-checked with the Network Hierarchy, unit and live test suites.
+> **Status: v0.12.0.** Connection and API capability checks, property and saved search listing, asset export to CSV/JSON, import (property updates and creation of missing assets) with dry run, safety backup and restore, NetBox IPAM, pfSense DNS/DHCP and IBM SevOne NPM synchronization, data quality report cross-checked with the Network Hierarchy, unit and live test suites.
 
 > ⚠️ **Before we go further: AssetSuite is NOT meant to be installed on a QRadar console or any QRadar appliance.** It runs from an admin workstation or a small Linux VM and only talks to QRadar through the REST API. Installing it, or its Python packages, on QRadar is unsupported by IBM and can break QRadar components. [Details below](#-installation).
 

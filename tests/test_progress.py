@@ -184,6 +184,10 @@ def test_report_through_service(client):
     assert payload["options"]["checks"] == ["stale", "unnamed"]
     assert payload["summary"].keys() == {"stale", "unnamed"}
     assert len(payload["findings"]) == len(outcome.findings)
+    # the last sighting of each asset with a finding, to tell duplicates apart
+    assert set(payload["last_seen"]) == {str(f.asset_id) for f in outcome.findings}
+    assert all(payload["last_seen"][str(f.asset_id)] == "" for f in outcome.findings if f.detail == "never seen")
+    assert payload["last_seen"]["3001"] == "2026-08-28T12:00:00+00:00"
 
 
 @responses.activate
