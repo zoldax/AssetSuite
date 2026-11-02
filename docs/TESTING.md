@@ -14,7 +14,7 @@ ASSETSUITE_LIVE=1 pytest tests/live                 # read-only live tests
 ASSETSUITE_LIVE=1 ASSETSUITE_LIVE_WRITE=1 pytest tests/live   # + the write test
 ```
 
-## Unit tests (274)
+## Unit tests (295)
 
 The mocked responses follow what QRadar 7.6.0 FP1 returns (shapes checked on the lab), with anonymized values (RFC 5737 IPs, `example.lan` names).
 
@@ -31,6 +31,7 @@ The mocked responses follow what QRadar 7.6.0 FP1 returns (shapes checked on the
 | `test_network_hierarchy.py` | 9 |
 | `test_pfsense.py` | 25 | Partial (`<unbound>`, `<dhcpd>`) and complete (`<pfsense>`) backups, DNS and DHCP merged by IP, names and domains, MAC-only reservations, networks filter, `CATEGORY - text` descriptions, DOCTYPE / invalid / foreign files refused, clear error without `defusedxml`, config errors, rows; anonymized XML fixtures in `tests/fixtures/` |
 | `test_netbox.py` | 17 | NetBox config and mapping rules, records from IPs / devices / VMs, `-` as empty DNS name, pagination through `next`, Token / Bearer, errors, only assigned devices and VMs fetched | Longest-prefix lookup, outside NH, domain mismatch, `network_id` change, catch-all groups and sub-groups, empty networks, API without `Range`, NHSuite CSV |
+| `test_phpipam.py` | 21 | phpIPAM config (URL with or without `/api`, environment, statuses and sections), records from addresses with status, section, subnet, device, device type and location, `-- autodiscovered --` as empty, `custom_` fields, rows with MAC and DNS name, `token` header, "No ... found" (HTTP 404) as an empty list, errors, devices and locations only read when used, GET only; payloads shaped like phpIPAM 1.8.3 answers |
 | `test_sevone.py` | 30 | SevOne config and mapping rules (`md:` metadata fields), metadata flattening (`Unknown` as empty), device types without the `Generic` branch, loopback / deleted devices left aside, FQDN `sysName` as DNS name, v2 pagination, device group filter (name, path, id), X-AUTH-TOKEN, errors, GET only, service account (sign-in, session renewed once, sign-out, errors) |
 | `test_progress.py` | 12 | Progress and cancellation through the core (QRadar `Content-Range` total, cancel between pages, NetBox / SevOne phases, planner rows), `config_from_mapping`, service layer behind the commands (import plan phases and GET only, report, errors), pfSense backups counted |
 | `test_write_service.py` | 6 | Write services shared with the QRadar App: plan fingerprint (changes with a new value and with an asset changed in QRadar), safety backup in a given folder before any write, updates then bulk creations recorded in the backup, clean stop between two assets, stop at the first write refused for its credentials (HTTP 401), restore plan and run with deletion, other host and missing delete right refused before any write |
@@ -43,7 +44,7 @@ Bugs these tests caught during development: two infinite pagination loops in moc
 
 The QRadar comes from `config.json`, the file in `ASSETSUITE_CONFIG`, or the `QRADAR_HOST` / `QRADAR_SEC_TOKEN` / `QRADAR_SSL_CERT_PATH` variables. Each test runs in a temporary directory: exports, reports, backups and logs never land in the project. The variant configurations of the error tests never contain the token, which goes through `QRADAR_SEC_TOKEN`.
 
-### Read-only (19 tests, `test_live_read.py`)
+### Read-only (20 tests, `test_live_read.py`)
 
 Nothing is written to QRadar.
 
@@ -63,6 +64,7 @@ Nothing is written to QRadar.
 | `test_report` | Report file and `--fail-on` exit code |
 | `test_report_nhsuite_file_matches_api` | The NH read from an NHSuite CSV gives the same findings as the NH read from QRadar |
 | `test_netbox_sync_dry_run` | `netbox-sync` dry run against the NetBox of the config (skipped without a `netbox` section) |
+| `test_phpipam_sync_dry_run` | `phpipam-sync` dry run against the phpIPAM of the config (skipped without a `phpipam` section) |
 | `test_pfsense_sync_dry_run` | `pfsense-sync` dry run on the backups of `private/` (skipped without them) |
 | `test_sevone_sync_dry_run` | `sevone-sync` dry run against the SevOne of the config (skipped without a `sevone` section) |
 

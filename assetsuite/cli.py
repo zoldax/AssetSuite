@@ -53,10 +53,12 @@ from assetsuite.service import (
     finding_rows,
     load_netbox,
     load_pfsense,
+    load_phpipam,
     load_sevone,
     netbox_source,
     parse_checks,
     pfsense_source,
+    phpipam_source,
     plan_import,
     prepare_import,
     prepare_report,
@@ -351,6 +353,18 @@ def cmd_netbox_sync(client: QRadarClient, args: argparse.Namespace) -> int:
     source = netbox_source(nb_config, args.domain)
     statuses = ", ".join(nb_config.statuses) or "any"
     print(f"{source.kept} NetBox IP addresses (status {statuses}) -> domain {source.domain}")
+    return _run_source(client, args, source)
+
+
+def cmd_phpipam_sync(client: QRadarClient, args: argparse.Namespace) -> int:
+    pi_config = load_phpipam(client)
+    print(f"Please wait... reading phpIPAM {pi_config.url}.")
+    source = phpipam_source(pi_config, args.domain)
+    statuses = ", ".join(pi_config.statuses) or "any"
+    sections = ", ".join(pi_config.sections) or "all sections"
+    print(
+        f"{source.read} phpIPAM addresses, {source.kept} kept (status {statuses}, {sections}) -> domain {source.domain}"
+    )
     return _run_source(client, args, source)
 
 
@@ -690,6 +704,19 @@ def build_parser() -> argparse.ArgumentParser:
     netbox.add_argument("--save-csv", metavar="FILE", help="Also save the generated import rows to this CSV file")
     _add_import_options(netbox)
     netbox.set_defaults(handler=cmd_netbox_sync)
+
+    phpipam = subparsers.add_parser(
+        "phpipam-sync",
+        help="Update asset properties from the phpIPAM IPAM, and create missing assets",
+        description="Read the phpIPAM IP addresses (phpipam section of the config) and import them as assets, "
+        "with the property mapping of the config. Without --apply, only shows what would change (dry run).",
+    )
+    phpipam.add_argument(
+        "--domain", metavar="ID|NAME", help="QRadar domain of the phpIPAM addresses (default: phpipam.domain)"
+    )
+    phpipam.add_argument("--save-csv", metavar="FILE", help="Also save the generated import rows to this CSV file")
+    _add_import_options(phpipam)
+    phpipam.set_defaults(handler=cmd_phpipam_sync)
 
     pfsense = subparsers.add_parser(
         "pfsense-sync",

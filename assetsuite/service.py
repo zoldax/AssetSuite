@@ -2,7 +2,7 @@
 service.py
 
 The operations behind the commands, without any printing: read a source of
-asset data (NetBox, SevOne, pfSense backups), plan an import against the
+asset data (NetBox, phpIPAM, SevOne, pfSense backups), plan an import against the
 QRadar assets and write it, restore a safety backup, run the quality report. The CLI prints their results; the
 QRadar App runs them as background jobs and follows them with a Progress.
 
@@ -40,6 +40,9 @@ from assetsuite.network_hierarchy import (
 from assetsuite.pfsense import PfSenseConfig, PfSenseError, build_records, load_pfsense_config, read_backups
 from assetsuite.pfsense import import_rows as pfsense_import_rows
 from assetsuite.pfsense import resolve_files as pfsense_resolve_files
+from assetsuite.phpipam import PhpIpamClient, PhpIpamConfig, PhpIpamError, load_phpipam_config
+from assetsuite.phpipam import fetch_records as phpipam_fetch_records
+from assetsuite.phpipam import import_rows as phpipam_import_rows
 from assetsuite.progress import Progress, or_none
 from assetsuite.quality import CHECKS as QUALITY_CHECKS
 from assetsuite.quality import NH_CHECKS, Finding, ReportOptions, check_assets, sort_findings, summary
@@ -130,6 +133,32 @@ def netbox_source(
     domain = domain if domain is not None else config.domain
     header, rows = netbox_import_rows(records, config, domain)
     return SyncSource(header, rows, domain, read=len(records), kept=len(records))
+
+
+def load_phpipam(client: QRadarClient) -> PhpIpamConfig:
+    """The phpipam section, its mapping checked against the properties of this QRadar."""
+    try:
+        config = load_phpipam_config(client.config.sections)
+    except PhpIpamError as e:
+        raise ServiceError(str(e)) from e
+    check_property_names(list(config.mapping), property_names(client))
+    return config
+
+
+def phpipam_source(
+    config: PhpIpamConfig,
+    domain: Optional[str] = None,
+    progress: Optional[Progress] = None,
+    session: Optional[requests.Session] = None,
+) -> SyncSource:
+    """session: a requests session with its proxy settings (the App sets one per connector)."""
+    try:
+        records, read = phpipam_fetch_records(PhpIpamClient(config, session=session), progress)
+    except PhpIpamError as e:
+        raise ServiceError(str(e)) from e
+    domain = domain if domain is not None else config.domain
+    header, rows = phpipam_import_rows(records, config, domain)
+    return SyncSource(header, rows, domain, read=read, kept=len(records))
 
 
 def load_pfsense(client: QRadarClient) -> PfSenseConfig:

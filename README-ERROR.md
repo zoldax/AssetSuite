@@ -141,6 +141,23 @@ Report status `reconciled`: QRadar merged the row into an existing asset (its id
 
 `TLS verification is disabled for NetBox` is a warning printed when `netbox.verify_ssl` is false.
 
+## phpIPAM errors (`phpipam-sync`, exit 2)
+
+| Message | Fix |
+|---|---|
+| `phpIPAM is not configured` | Add the `phpipam` section with `url`, `app_id` and `token` (see `config.example.json`) |
+| `'phpipam.token' is not set` | Put the app code token of a read-only phpIPAM API app in `phpipam.token` or `PHPIPAM_TOKEN` |
+| `Unknown phpipam setting(s)` | Typo in the `phpipam` section |
+| `'phpipam.statuses' must be a list of names` | Status names, e.g. `["Used", "DHCP"]` (same for `sections`) |
+| `phpipam.mapping['X']: unknown phpIPAM field(s)` | Fields and rule syntax: see the README |
+| `Unknown asset propert(y/ies): X` | A mapping key is not a property of this QRadar (case-sensitive, see `properties`) |
+| `phpIPAM refused the token (HTTP 401/403)` | Wrong `app_id` or token, API app without read permission, or not in "SSL with App code token" security |
+| `HTTP 404 from phpIPAM ...` | URL or `app_id` wrong, or the API is not enabled in phpIPAM |
+| `TLS verification failed for phpIPAM` | Set `phpipam.ssl_cert_path`, or `phpipam.verify_ssl: false` in a lab |
+| `Cannot reach phpIPAM ...` | URL, DNS, firewall |
+
+`TLS verification is disabled for phpIPAM` is a warning printed when `phpipam.verify_ssl` is false. phpIPAM answers "No ... found" with HTTP 404 when a list is empty: that is not an error.
+
 ## pfSense errors (`pfsense-sync`, exit 2)
 
 | Message | Fix |

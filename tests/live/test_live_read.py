@@ -171,6 +171,20 @@ def test_netbox_sync_dry_run(run, workdir, live_config):
     assert not (workdir / "safety").exists()
 
 
+def test_phpipam_sync_dry_run(run, workdir, live_config):
+    from assetsuite.phpipam import PhpIpamError, load_phpipam_config
+
+    try:
+        load_phpipam_config(live_config.sections)
+    except PhpIpamError as e:
+        pytest.skip(f"phpIPAM not configured: {e}")
+    code, out, err = run("phpipam-sync", "--allow-create", "--report", "pi-report.csv", "--save-csv", "pi.csv")
+    assert code == EXIT_OK, out + err
+    assert "phpIPAM addresses" in out and "Dry run: nothing was written" in out
+    assert len(csv_rows(workdir / "pi.csv")) == len(csv_rows(workdir / "pi-report.csv"))
+    assert not (workdir / "safety").exists()
+
+
 def test_pfsense_sync_dry_run(run, workdir):
     import glob
     import os

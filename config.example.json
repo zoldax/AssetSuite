@@ -55,6 +55,47 @@
             }
         }
     },
+    "phpipam": {
+        "url": "https://ipam.example.lan",
+        "app_id": "assetsuite",
+        "token": "CHANGE_ME",
+        "verify_ssl": true,
+        "ssl_cert_path": null,
+        "domain": "DEFAULT_DOMAIN",
+        "statuses": [
+            "Used"
+        ],
+        "sections": [],
+        "mapping": {
+            "Given Name": {
+                "first": [
+                    "hostname",
+                    "device_name"
+                ]
+            },
+            "Description": {
+                "first": [
+                    "description",
+                    "device_description"
+                ]
+            },
+            "Location": {
+                "first": [
+                    "location"
+                ]
+            },
+            "Asset Type": {
+                "first": [
+                    "device_type"
+                ]
+            },
+            "Business Owner": {
+                "first": [
+                    "owner"
+                ]
+            }
+        }
+    },
     "pfsense": {
         "files": [
             "private/*.xml"

@@ -4,7 +4,7 @@
 
 AssetSuite helps manage the IBM QRadar asset model from the command line: export assets, update their properties in bulk from CSV, report on asset data quality, and cross-check assets against the Network Hierarchy managed with [NHSuite](https://github.com/zoldax/NHSuite).
 
-> **Status: v0.12.0.** Connection and API capability checks, property and saved search listing, asset export to CSV/JSON, import (property updates and creation of missing assets) with dry run, safety backup and restore, NetBox IPAM, pfSense DNS/DHCP and IBM SevOne NPM synchronization, data quality report cross-checked with the Network Hierarchy, unit and live test suites.
+> **Status: v0.13.0.** Connection and API capability checks, property and saved search listing, asset export to CSV/JSON, import (property updates and creation of missing assets) with dry run, safety backup and restore, NetBox and phpIPAM IPAM, pfSense DNS/DHCP and IBM SevOne NPM synchronization, data quality report cross-checked with the Network Hierarchy, unit and live test suites.
 
 > ⚠️ **Before we go further: AssetSuite is NOT meant to be installed on a QRadar console or any QRadar appliance.** It runs from an admin workstation or a small Linux VM and only talks to QRadar through the REST API. Installing it, or its Python packages, on QRadar is unsupported by IBM and can break QRadar components. [Details below](#-installation).
 
@@ -18,11 +18,11 @@ AssetSuite helps manage the IBM QRadar asset model from the command line: export
 
 ## 📦 Installation
 
-**Run AssetSuite from an admin workstation or a small Linux VM with Python 3.9 or later, not on the QRadar console.** AssetSuite only talks to the QRadar REST API (and to NetBox or SevOne), like NHSuite, so it does not need to be on QRadar:
+**Run AssetSuite from an admin workstation or a small Linux VM with Python 3.9 or later, not on the QRadar console.** AssetSuite only talks to the QRadar REST API (and to NetBox, phpIPAM or SevOne), like NHSuite, so it does not need to be on QRadar:
 - the console's system Python (3.6 on QRadar 7.5/7.6, RHEL 8) is too old: AssetSuite needs 3.9+, and on 3.6 `requests` would be stuck at 2.27.1, without its later security fixes;
 - installing packages into that Python can break QRadar components, is not supported by IBM, and may be undone by a QRadar upgrade.
 
-The machine needs HTTPS access to the console (and to NetBox or SevOne), the PEM of the internal CA if the certificates come from one, and the `config.json` holding the token. On RHEL 8/9: `sudo dnf install python3.11`, then create the virtual environment below with `python3.11 -m venv .venv`. On macOS, prefer a recent Python (e.g. Homebrew) to `/usr/bin/python3`, which is built with LibreSSL 2.8.3 (urllib3 `NotOpenSSLWarning`, no TLS 1.3).
+The machine needs HTTPS access to the console (and to NetBox, phpIPAM or SevOne), the PEM of the internal CA if the certificates come from one, and the `config.json` holding the token. On RHEL 8/9: `sudo dnf install python3.11`, then create the virtual environment below with `python3.11 -m venv .venv`. On macOS, prefer a recent Python (e.g. Homebrew) to `/usr/bin/python3`, which is built with LibreSSL 2.8.3 (urllib3 `NotOpenSSLWarning`, no TLS 1.3).
 
 ```bash
 python3 -m venv .venv
@@ -46,6 +46,7 @@ python3 AssetSuite.py export [options] # export assets to CSV or JSON
 python3 AssetSuite.py import FILE      # update asset properties / create missing assets (dry run by default)
 python3 AssetSuite.py restore BACKUP   # put back the values saved before an import (dry run by default)
 python3 AssetSuite.py netbox-sync      # update / create assets from the NetBox IPAM (dry run by default)
+python3 AssetSuite.py phpipam-sync     # update / create assets from the phpIPAM IPAM (dry run by default)
 python3 AssetSuite.py pfsense-sync     # name assets from pfSense DNS overrides and static DHCP mappings (dry run by default)
 python3 AssetSuite.py sevone-sync      # fill assets from the devices monitored by IBM SevOne NPM (dry run by default)
 python3 AssetSuite.py report           # data quality report, cross-checked with the Network Hierarchy
@@ -223,6 +224,37 @@ Notes:
 - Properties that were empty before cannot be emptied again by `restore` (no API for it): review the dry run first.
 - `User Supplied OS` can influence how QRadar relates vulnerabilities to the asset: remove it from the mapping if you do not want NetBox to set it.
 
+### `phpipam-sync`
+
+Reads the IP addresses of the **phpIPAM** IPAM (REST API, read only), with their status, section, subnet, device and location, turns them into import rows (one per IP) with the property mapping of the `phpipam` section of the configuration, and runs them through the import: same dry run, `--apply`, `--allow-create`, safety backup, report and `restore`.
+
+```bash
+python3 AssetSuite.py phpipam-sync                              # dry run: what phpIPAM would change in QRadar
+python3 AssetSuite.py phpipam-sync --save-csv phpipam.csv       # also keep the generated rows
+python3 AssetSuite.py phpipam-sync --apply                      # update the properties of the matching assets
+python3 AssetSuite.py phpipam-sync --fill-empty-only --apply    # only fill empty properties, never overwrite QRadar
+python3 AssetSuite.py phpipam-sync --allow-create --apply       # also create the assets QRadar does not know
+```
+
+**In phpIPAM**: enable the API (Administration > phpIPAM settings > Feature settings), then create an API app (Administration > API) with the **Read** permission and the **SSL with App code token** security; its app code token goes in the configuration. Observed on phpIPAM 1.8.3.
+
+**Configuration** (`phpipam` section of `config.json`, see `config.example.json`): `url` (without `/api`), `app_id` (the id of the API app), `token` (its app code token; `PHPIPAM_TOKEN` overrides it, as `PHPIPAM_URL`, `PHPIPAM_APP_ID`), `verify_ssl` / `ssl_cert_path`, `domain` (QRadar domain of the phpIPAM addresses, `DEFAULT_DOMAIN` by default, `--domain` overrides it), `statuses` (phpIPAM address statuses to take, `["Used"]` by default; `Offline`, `Reserved`, `DHCP`, `[]` for all), `sections` (names of the phpIPAM sections to take, all by default) and `mapping`.
+
+| Default QRadar property | phpIPAM |
+|---|---|
+| `Given Name` | hostname of the address, else name of its device |
+| `Description` | description of the address, else of its device |
+| `Location` | location of the address, else of its device |
+| `Asset Type` | device type |
+| `Business Owner` | owner |
+
+phpIPAM fields available: `ip`, `hostname`, `description`, `note`, `mac`, `owner`, `status`, `section`, `subnet` (`192.0.2.0/24`), `subnet_description`, `location`, `port`, `device_name`, `device_description`, `device_type`, and `custom_<name>` for a custom field of the addresses. The hostname also goes to the `dns_names` column and the MAC to `mac_address`, to find the asset.
+
+Notes:
+- phpIPAM is the reference for the mapped properties, as NetBox: a different value in QRadar is replaced, unless `--fill-empty-only`. With both NetBox and phpIPAM, keep one of them as the reference and run the other with `--fill-empty-only`.
+- `-- autodiscovered --`, the description phpIPAM gives the addresses its scans find, counts as empty.
+- Devices, device types and locations are only read when an address uses them.
+
 ### `pfsense-sync`
 
 Reads pfSense configuration backups **offline** (nothing to install on the firewall): the DNS Resolver host overrides and the static DHCP mappings, merged into one import row per IP, then runs them through the import (dry run, `--apply`, `--allow-create`, backup, report, `restore`). **pfSense only fills empty properties** unless `--overwrite` (or `pfsense.overwrite: true`), so it completes NetBox without contradicting it.
@@ -308,8 +340,8 @@ Create an authorized service with a security profile covering the domains to man
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                                     # 274 unit tests, QRadar, NetBox and SevOne APIs mocked
-ASSETSUITE_LIVE=1 pytest tests/live        # 19 read-only tests against the QRadar (NetBox, SevOne, pfSense backups) of config.json
+pytest                                     # 295 unit tests, QRadar, NetBox, phpIPAM and SevOne APIs mocked
+ASSETSUITE_LIVE=1 pytest tests/live        # 20 read-only tests against the QRadar (NetBox, phpIPAM, SevOne, pfSense backups) of config.json
 ASSETSUITE_LIVE=1 ASSETSUITE_LIVE_WRITE=1 pytest tests/live   # + a write test on a temporary asset
 ruff check .                               # lint
 ```
@@ -326,6 +358,6 @@ Exit codes, error messages, their causes and fixes: [README-ERROR.md](README-ERR
 
 This software is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement. In no event shall the authors or contributors be held liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use of this software. See the [LICENSE](LICENSE) (Apache 2.0, sections 7 and 8).
 
-Use at your own risk. AssetSuite can create, modify and delete assets in QRadar: run a dry run first, test in a lab before production, and keep the safety backups. A restore cannot fully undo an import, as the QRadar API cannot empty a property. By using this software, you acknowledge that you assume all responsibility and potential risks associated with its usage, including compliance with the license and terms of IBM QRadar and of any connected product (NetBox, pfSense, SevOne).
+Use at your own risk. AssetSuite can create, modify and delete assets in QRadar: run a dry run first, test in a lab before production, and keep the safety backups. A restore cannot fully undo an import, as the QRadar API cannot empty a property. By using this software, you acknowledge that you assume all responsibility and potential risks associated with its usage, including compliance with the license and terms of IBM QRadar and of any connected product (NetBox, phpIPAM, pfSense, SevOne).
 
-AssetSuite is an independent project, not affiliated with, endorsed or supported by IBM, Netgate or NetBox Labs. QRadar, SevOne and IBM are trademarks or registered trademarks of International Business Machines Corp. pfSense is a trademark of Electric Sheep Fencing LLC (Netgate). NetBox is a trademark of NetBox Labs. All other trademarks are the property of their respective owners.
+AssetSuite is an independent project, not affiliated with, endorsed or supported by IBM, Netgate, NetBox Labs or the phpIPAM project. QRadar, SevOne and IBM are trademarks or registered trademarks of International Business Machines Corp. pfSense is a trademark of Electric Sheep Fencing LLC (Netgate). NetBox is a trademark of NetBox Labs. All other trademarks are the property of their respective owners.
