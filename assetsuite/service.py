@@ -2,7 +2,7 @@
 service.py
 
 The operations behind the commands, without any printing: read a source of
-asset data (NetBox, phpIPAM, SevOne, pfSense backups), plan an import against the
+asset data (NetBox, phpIPAM, GLPI, SevOne, pfSense backups), plan an import against the
 QRadar assets and write it, restore a safety backup, run the quality report. The CLI prints their results; the
 QRadar App runs them as background jobs and follows them with a Progress.
 
@@ -26,7 +26,10 @@ import requests
 from assetsuite.assets import fetch_assets, format_datetime, last_seen, list_properties
 from assetsuite.capabilities import CREATE_ASSET, DELETE_ASSET, Capabilities, detect_capabilities
 from assetsuite.client import QRadarClient
-from assetsuite.importer import ImportPlan, ImportRow, Planner
+from assetsuite.glpi import GlpiConfig, GlpiError, load_glpi_config
+from assetsuite.glpi import fetch_records as glpi_fetch_records
+from assetsuite.glpi import import_rows as glpi_import_rows
+from assetsuite.importer import DEFAULT_DOMAIN_NAME, ImportPlan, ImportRow, Planner
 from assetsuite.netbox import NetBoxClient, NetBoxConfig, NetBoxError, load_netbox_config
 from assetsuite.netbox import fetch_records as netbox_fetch_records
 from assetsuite.netbox import import_rows as netbox_import_rows
@@ -197,6 +200,47 @@ def pfsense_source(
         kept=len(records),
         fill_empty_only=not (overwrite or config.overwrite),
         files=list(paths),
+    )
+
+
+def load_glpi(client: QRadarClient) -> GlpiConfig:
+    """The glpi section, its mapping checked against the properties of this QRadar, its domains against QRadar."""
+    try:
+        config = load_glpi_config(client.config.sections)
+    except GlpiError as e:
+        raise ServiceError(str(e)) from e
+    check_property_names(list(config.mapping), property_names(client))
+    domains = list_domains(client)
+    known = {str(d.get("id")).casefold() for d in domains} | {
+        str(d.get("name") or (DEFAULT_DOMAIN_NAME if d.get("id") == 0 else "")).casefold() for d in domains
+    }
+    unknown = sorted({d for d in (config.domain, *config.entity_domains.values()) if d.casefold() not in known})
+    if unknown:  # stops before reading GLPI
+        raise ServiceError(f"Unknown QRadar domain(s) in the glpi section: {', '.join(unknown)}")
+    return config
+
+
+def glpi_source(
+    config: GlpiConfig,
+    domain: Optional[str] = None,
+    overwrite: bool = False,
+    progress: Optional[Progress] = None,
+    session: Optional[requests.Session] = None,
+) -> SyncSource:
+    """One row per GLPI asset, in the domain of its entity (entity_domains); domain replaces the default one."""
+    try:
+        records, read, skipped = glpi_fetch_records(config, session=session, progress=progress)
+    except GlpiError as e:
+        raise ServiceError(str(e)) from e
+    header, rows = glpi_import_rows(records, config, domain)
+    return SyncSource(
+        header,
+        rows,
+        domain if domain is not None else config.domain,
+        read=read,
+        kept=len(records),
+        fill_empty_only=not (overwrite or config.overwrite),
+        skipped=skipped,
     )
 
 

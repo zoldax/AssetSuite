@@ -141,6 +141,25 @@ Report status `reconciled`: QRadar merged the row into an existing asset (its id
 
 `TLS verification is disabled for NetBox` is a warning printed when `netbox.verify_ssl` is false.
 
+## GLPI errors (`glpi-sync`, exit 2)
+
+| Message | Fix |
+|---|---|
+| `GLPI is not configured` | Add the `glpi` section with `url` and `user_token` (see `config.example.json`) |
+| `'glpi.user_token' is not set` | Put the API token of a read-only GLPI user in `glpi.user_token` or `GLPI_USER_TOKEN` |
+| `Unknown glpi setting(s)` / `Unknown glpi.itemtypes` | Typo in the `glpi` section |
+| `'glpi.entity_domains' must map GLPI entity names to QRadar domains` | e.g. `{"Root entity > Customer A": "PROD1"}` |
+| `Unknown QRadar domain(s) in the glpi section` | A domain of `domain` or `entity_domains` is not a domain of this QRadar (see `check domains`) |
+| `glpi.mapping['X']: unknown GLPI field(s)` | Fields and rule syntax: see the README |
+| `GLPI ERROR_NOT_ALLOWED_IP` | Add the IP of this machine to the range of a GLPI API client (Setup > General > API) |
+| `GLPI ERROR_WRONG_APP_TOKEN_PARAMETER` / `ERROR_APP_TOKEN_PARAMETERS_MISSING` | `glpi.app_token` must be the App-Token of the API client covering this machine |
+| `GLPI refused the user token` | Wrong or regenerated user token, or a disabled user |
+| `login with an external token is off` / `the legacy REST API of GLPI is off` | Setup > General > API |
+| `TLS verification failed for GLPI` | Set `glpi.ssl_cert_path` (internal CA), or `glpi.verify_ssl: false` in a lab |
+| `Cannot reach GLPI ...` | URL, DNS, firewall |
+
+`left aside: Computer X: no IP nor MAC address in GLPI` and `left aside: Phones: the GLPI user cannot read Phone` are notes, not errors: the other assets are imported.
+
 ## phpIPAM errors (`phpipam-sync`, exit 2)
 
 | Message | Fix |

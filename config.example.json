@@ -96,6 +96,80 @@
             }
         }
     },
+    "glpi": {
+        "url": "https://glpi.example.lan",
+        "user_token": "CHANGE_ME",
+        "app_token": "CHANGE_ME",
+        "verify_ssl": true,
+        "ssl_cert_path": null,
+        "domain": "DEFAULT_DOMAIN",
+        "entity_domains": {
+            "Root entity > Customer A": "PROD1"
+        },
+        "itemtypes": [
+            "Computer",
+            "NetworkEquipment",
+            "Printer",
+            "Phone",
+            "Peripheral"
+        ],
+        "states": [],
+        "ignore_ports": [
+            "docker*",
+            "br-*",
+            "veth*",
+            "virbr*",
+            "cni*",
+            "flannel*",
+            "vmnet*"
+        ],
+        "overwrite": false,
+        "mapping": {
+            "Given Name": {
+                "first": [
+                    "name"
+                ]
+            },
+            "Description": {
+                "first": [
+                    "comment"
+                ]
+            },
+            "Location": {
+                "first": [
+                    "location"
+                ]
+            },
+            "Asset Type": {
+                "first": [
+                    "type",
+                    "itemtype"
+                ]
+            },
+            "Business Owner": {
+                "first": [
+                    "group",
+                    "user"
+                ]
+            },
+            "Technical Owner": {
+                "first": [
+                    "technical_group",
+                    "technician"
+                ]
+            },
+            "Technical Contact": {
+                "first": [
+                    "contact"
+                ]
+            },
+            "User Supplied OS": {
+                "first": [
+                    "os"
+                ]
+            }
+        }
+    },
     "pfsense": {
         "files": [
             "private/*.xml"

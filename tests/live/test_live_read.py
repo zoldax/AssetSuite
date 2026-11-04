@@ -18,6 +18,11 @@ def csv_rows(path):
         return list(csv.DictReader(file))
 
 
+def report_lines(path):
+    """The rows of the source an import report covers: one report line may cover several ("41;43", one asset)."""
+    return sum(len(row["line"].split(";")) for row in csv_rows(path))
+
+
 @pytest.fixture(scope="module")
 def all_assets(live_client):
     return live_client.get_all("asset_model/assets")
@@ -167,7 +172,7 @@ def test_netbox_sync_dry_run(run, workdir, live_config):
     code, out, err = run("netbox-sync", "--allow-create", "--report", "netbox-report.csv", "--save-csv", "netbox.csv")
     assert code == EXIT_OK, out + err
     assert "Dry run: nothing was written" in out
-    assert len(csv_rows(workdir / "netbox.csv")) == len(csv_rows(workdir / "netbox-report.csv"))
+    assert len(csv_rows(workdir / "netbox.csv")) == report_lines(workdir / "netbox-report.csv")
     assert not (workdir / "safety").exists()
 
 
@@ -181,7 +186,21 @@ def test_phpipam_sync_dry_run(run, workdir, live_config):
     code, out, err = run("phpipam-sync", "--allow-create", "--report", "pi-report.csv", "--save-csv", "pi.csv")
     assert code == EXIT_OK, out + err
     assert "phpIPAM addresses" in out and "Dry run: nothing was written" in out
-    assert len(csv_rows(workdir / "pi.csv")) == len(csv_rows(workdir / "pi-report.csv"))
+    assert len(csv_rows(workdir / "pi.csv")) == report_lines(workdir / "pi-report.csv")
+    assert not (workdir / "safety").exists()
+
+
+def test_glpi_sync_dry_run(run, workdir, live_config):
+    from assetsuite.glpi import GlpiError, load_glpi_config
+
+    try:
+        load_glpi_config(live_config.sections)
+    except GlpiError as e:
+        pytest.skip(f"GLPI not configured: {e}")
+    code, out, err = run("glpi-sync", "--allow-create", "--report", "gl-report.csv", "--save-csv", "gl.csv")
+    assert code == EXIT_OK, out + err
+    assert "GLPI assets" in out and "Dry run: nothing was written" in out
+    assert len(csv_rows(workdir / "gl.csv")) == report_lines(workdir / "gl-report.csv")
     assert not (workdir / "safety").exists()
 
 
@@ -195,7 +214,7 @@ def test_pfsense_sync_dry_run(run, workdir):
     code, out, err = run("pfsense-sync", "--file", pattern, "--report", "pf-report.csv", "--save-csv", "pf.csv")
     assert code == EXIT_OK, out + err
     assert "pfSense only fills empty properties" in out and "Dry run: nothing was written" in out
-    assert len(csv_rows(workdir / "pf.csv")) == len(csv_rows(workdir / "pf-report.csv"))
+    assert len(csv_rows(workdir / "pf.csv")) == report_lines(workdir / "pf-report.csv")
     assert not (workdir / "safety").exists()
 
 
@@ -209,5 +228,5 @@ def test_sevone_sync_dry_run(run, workdir, live_config):
     code, out, err = run("sevone-sync", "--allow-create", "--report", "so-report.csv", "--save-csv", "so.csv")
     assert code == EXIT_OK, out + err
     assert "SevOne only fills empty properties" in out and "Dry run: nothing was written" in out
-    assert len(csv_rows(workdir / "so.csv")) == len(csv_rows(workdir / "so-report.csv"))
+    assert len(csv_rows(workdir / "so.csv")) == report_lines(workdir / "so-report.csv")
     assert not (workdir / "safety").exists()

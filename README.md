@@ -4,7 +4,7 @@
 
 AssetSuite helps manage the IBM QRadar asset model from the command line: export assets, update their properties in bulk from CSV, report on asset data quality, and cross-check assets against the Network Hierarchy managed with [NHSuite](https://github.com/zoldax/NHSuite).
 
-> **Status: v0.13.0.** Connection and API capability checks, property and saved search listing, asset export to CSV/JSON, import (property updates and creation of missing assets) with dry run, safety backup and restore, NetBox and phpIPAM IPAM, pfSense DNS/DHCP and IBM SevOne NPM synchronization, data quality report cross-checked with the Network Hierarchy, unit and live test suites.
+> **Status: v0.14.0.** Connection and API capability checks, property and saved search listing, asset export to CSV/JSON, import (property updates and creation of missing assets) with dry run, safety backup and restore, NetBox and phpIPAM IPAM, GLPI CMDB, pfSense DNS/DHCP and IBM SevOne NPM synchronization, data quality report cross-checked with the Network Hierarchy, unit and live test suites.
 
 > ⚠️ **Before we go further: AssetSuite is NOT meant to be installed on a QRadar console or any QRadar appliance.** It runs from an admin workstation or a small Linux VM and only talks to QRadar through the REST API. Installing it, or its Python packages, on QRadar is unsupported by IBM and can break QRadar components. [Details below](#-installation).
 
@@ -18,11 +18,11 @@ AssetSuite helps manage the IBM QRadar asset model from the command line: export
 
 ## 📦 Installation
 
-**Run AssetSuite from an admin workstation or a small Linux VM with Python 3.9 or later, not on the QRadar console.** AssetSuite only talks to the QRadar REST API (and to NetBox, phpIPAM or SevOne), like NHSuite, so it does not need to be on QRadar:
+**Run AssetSuite from an admin workstation or a small Linux VM with Python 3.9 or later, not on the QRadar console.** AssetSuite only talks to the QRadar REST API (and to NetBox, phpIPAM, GLPI or SevOne), like NHSuite, so it does not need to be on QRadar:
 - the console's system Python (3.6 on QRadar 7.5/7.6, RHEL 8) is too old: AssetSuite needs 3.9+, and on 3.6 `requests` would be stuck at 2.27.1, without its later security fixes;
 - installing packages into that Python can break QRadar components, is not supported by IBM, and may be undone by a QRadar upgrade.
 
-The machine needs HTTPS access to the console (and to NetBox, phpIPAM or SevOne), the PEM of the internal CA if the certificates come from one, and the `config.json` holding the token. On RHEL 8/9: `sudo dnf install python3.11`, then create the virtual environment below with `python3.11 -m venv .venv`. On macOS, prefer a recent Python (e.g. Homebrew) to `/usr/bin/python3`, which is built with LibreSSL 2.8.3 (urllib3 `NotOpenSSLWarning`, no TLS 1.3).
+The machine needs HTTPS access to the console (and to NetBox, phpIPAM, GLPI or SevOne), the PEM of the internal CA if the certificates come from one, and the `config.json` holding the token. On RHEL 8/9: `sudo dnf install python3.11`, then create the virtual environment below with `python3.11 -m venv .venv`. On macOS, prefer a recent Python (e.g. Homebrew) to `/usr/bin/python3`, which is built with LibreSSL 2.8.3 (urllib3 `NotOpenSSLWarning`, no TLS 1.3).
 
 ```bash
 python3 -m venv .venv
@@ -47,6 +47,7 @@ python3 AssetSuite.py import FILE      # update asset properties / create missin
 python3 AssetSuite.py restore BACKUP   # put back the values saved before an import (dry run by default)
 python3 AssetSuite.py netbox-sync      # update / create assets from the NetBox IPAM (dry run by default)
 python3 AssetSuite.py phpipam-sync     # update / create assets from the phpIPAM IPAM (dry run by default)
+python3 AssetSuite.py glpi-sync        # fill assets from the GLPI CMDB (dry run by default)
 python3 AssetSuite.py pfsense-sync     # name assets from pfSense DNS overrides and static DHCP mappings (dry run by default)
 python3 AssetSuite.py sevone-sync      # fill assets from the devices monitored by IBM SevOne NPM (dry run by default)
 python3 AssetSuite.py report           # data quality report, cross-checked with the Network Hierarchy
@@ -255,6 +256,41 @@ Notes:
 - `-- autodiscovered --`, the description phpIPAM gives the addresses its scans find, counts as empty.
 - Devices, device types and locations are only read when an address uses them.
 
+### `glpi-sync`
+
+Reads the assets of the **GLPI** CMDB (legacy REST API, read only): computers, network equipment, printers, phones and peripherals, with their IP and MAC addresses, groups, users, location, type, model and operating system. **One import row per GLPI asset**, with every address of the asset, in the QRadar domain of its GLPI entity; then the import (dry run, `--apply`, `--allow-create`, backup, report, `restore`). **GLPI only fills empty properties** unless `--overwrite` (or `glpi.overwrite: true`), so it completes NetBox / phpIPAM without contradicting them.
+
+```bash
+python3 AssetSuite.py glpi-sync                              # dry run: what GLPI would fill in QRadar
+python3 AssetSuite.py glpi-sync --save-csv glpi.csv          # also keep the generated rows
+python3 AssetSuite.py glpi-sync --apply                      # fill the empty properties of the matching assets
+python3 AssetSuite.py glpi-sync --overwrite --apply          # replace QRadar values too
+```
+
+**In GLPI** (Setup > General > API): turn on the **legacy REST API** and **login with an external token**; add an **API client** whose IPv4 range covers the machine running AssetSuite (else `ERROR_NOT_ALLOWED_IP`), with an App-Token if you want one. Create a dedicated user with a **read-only** profile on the assets and the entities to read (recursive), and take its **API token** (user preferences, Remote access keys). Observed on GLPI 12.0.1; the legacy API sessions are read only.
+
+**Configuration** (`glpi` section of `config.json`, see `config.example.json`): `url` (without `/apirest.php`), `user_token` (`GLPI_USER_TOKEN` overrides it), `app_token` (the App-Token of the API client, empty when it has none; `GLPI_APP_TOKEN`), `verify_ssl` / `ssl_cert_path`, `domain` (QRadar domain of the entities without rule; `--domain` overrides it), `entity_domains`, `itemtypes` (`Computer`, `NetworkEquipment`, `Printer`, `Phone`, `Peripheral` by default), `states` (GLPI statuses to keep, all by default), `ignore_ports`, `overwrite` and `mapping`.
+
+**Entities and domains**: `entity_domains` maps GLPI entities, by complete name, to QRadar domains, e.g. `{"Root entity > Customer A": "PROD1", "Root entity > Customer B": "PROD2"}`. An entity also covers its sub-entities; the most precise rule wins; the other entities go to `domain`. Unknown QRadar domains stop the command before GLPI is read.
+
+| Default QRadar property | GLPI |
+|---|---|
+| `Given Name` | name |
+| `Description` | comment |
+| `Location` | location (complete name) |
+| `Asset Type` | type (e.g. Server), else the kind of asset (Computer, Printer...) |
+| `Business Owner` | groups (`;`-separated), else the user |
+| `Technical Owner` | technical groups, else the technician |
+| `Technical Contact` | contact |
+| `User Supplied OS` | operating system and version |
+
+GLPI fields available: `itemtype`, `name`, `comment`, `serial`, `inventory_number`, `uuid`, `entity`, `location`, `type`, `manufacturer`, `model`, `status`, `user`, `technician`, `group`, `technical_group`, `contact`, `os`, `os_name`, `os_version`.
+
+Notes:
+- The addresses come from the network ports of the asset. Loopback, link-local and multicast addresses are left out, and so are the ports of containers and virtual bridges (`ignore_ports`, by default `docker*`, `br-*`, `veth*`, `virbr*`, `cni*`, `flannel*`, `vmnet*`): their addresses (172.17.0.1...) are on many hosts and would match the wrong QRadar asset.
+- An asset without any IP nor MAC address in GLPI is left aside, with the reason; templates and assets in the trash are never read. A type the GLPI user cannot read is left aside too.
+- GLPI is read in bulk (assets, then every IP address, network port, group link and operating system), a few requests whatever the size of the CMDB; the session is always closed.
+
 ### `pfsense-sync`
 
 Reads pfSense configuration backups **offline** (nothing to install on the firewall): the DNS Resolver host overrides and the static DHCP mappings, merged into one import row per IP, then runs them through the import (dry run, `--apply`, `--allow-create`, backup, report, `restore`). **pfSense only fills empty properties** unless `--overwrite` (or `pfsense.overwrite: true`), so it completes NetBox without contradicting it.
@@ -340,8 +376,8 @@ Create an authorized service with a security profile covering the domains to man
 
 ```bash
 pip install -r requirements-dev.txt
-pytest                                     # 295 unit tests, QRadar, NetBox, phpIPAM and SevOne APIs mocked
-ASSETSUITE_LIVE=1 pytest tests/live        # 20 read-only tests against the QRadar (NetBox, phpIPAM, SevOne, pfSense backups) of config.json
+pytest                                     # 319 unit tests, QRadar, NetBox, phpIPAM, GLPI and SevOne APIs mocked
+ASSETSUITE_LIVE=1 pytest tests/live        # 21 read-only tests against the QRadar (NetBox, phpIPAM, GLPI, SevOne, pfSense backups) of config.json
 ASSETSUITE_LIVE=1 ASSETSUITE_LIVE_WRITE=1 pytest tests/live   # + a write test on a temporary asset
 ruff check .                               # lint
 ```
@@ -358,6 +394,6 @@ Exit codes, error messages, their causes and fixes: [README-ERROR.md](README-ERR
 
 This software is provided "as is", without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, and non-infringement. In no event shall the authors or contributors be held liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the software or the use of this software. See the [LICENSE](LICENSE) (Apache 2.0, sections 7 and 8).
 
-Use at your own risk. AssetSuite can create, modify and delete assets in QRadar: run a dry run first, test in a lab before production, and keep the safety backups. A restore cannot fully undo an import, as the QRadar API cannot empty a property. By using this software, you acknowledge that you assume all responsibility and potential risks associated with its usage, including compliance with the license and terms of IBM QRadar and of any connected product (NetBox, phpIPAM, pfSense, SevOne).
+Use at your own risk. AssetSuite can create, modify and delete assets in QRadar: run a dry run first, test in a lab before production, and keep the safety backups. A restore cannot fully undo an import, as the QRadar API cannot empty a property. By using this software, you acknowledge that you assume all responsibility and potential risks associated with its usage, including compliance with the license and terms of IBM QRadar and of any connected product (NetBox, phpIPAM, GLPI, pfSense, SevOne).
 
-AssetSuite is an independent project, not affiliated with, endorsed or supported by IBM, Netgate, NetBox Labs or the phpIPAM project. QRadar, SevOne and IBM are trademarks or registered trademarks of International Business Machines Corp. pfSense is a trademark of Electric Sheep Fencing LLC (Netgate). NetBox is a trademark of NetBox Labs. All other trademarks are the property of their respective owners.
+AssetSuite is an independent project, not affiliated with, endorsed or supported by IBM, Netgate, NetBox Labs, Teclib' or the phpIPAM project. QRadar, SevOne and IBM are trademarks or registered trademarks of International Business Machines Corp. pfSense is a trademark of Electric Sheep Fencing LLC (Netgate). NetBox is a trademark of NetBox Labs. GLPI is a trademark of Teclib'. All other trademarks are the property of their respective owners.

@@ -51,6 +51,8 @@ from assetsuite.service import (
     changes_text,
     check_property_names,
     finding_rows,
+    glpi_source,
+    load_glpi,
     load_netbox,
     load_pfsense,
     load_phpipam,
@@ -378,6 +380,22 @@ def cmd_pfsense_sync(client: QRadarClient, args: argparse.Namespace) -> int:
     )
     if source.fill_empty_only:
         print("pfSense only fills empty properties (--overwrite to replace QRadar values)")
+    return _run_source(client, args, source)
+
+
+def cmd_glpi_sync(client: QRadarClient, args: argparse.Namespace) -> int:
+    gl_config = load_glpi(client)
+    print(f"Please wait... reading GLPI {gl_config.url}.")
+    source = glpi_source(gl_config, args.domain, args.overwrite)
+    types = ", ".join(gl_config.itemtypes)
+    entities = f", {len(gl_config.entity_domains)} entity -> domain rule(s)" if gl_config.entity_domains else ""
+    print(f"{source.read} GLPI assets ({types}), {source.kept} kept{entities} -> default domain {source.domain}")
+    for name, reason in _limited(source.skipped, args.verbose):
+        print(f"  left aside: {name}: {reason}")
+    if not args.verbose and len(source.skipped) > DETAIL_LIMIT:
+        print(f"    ... and {len(source.skipped) - DETAIL_LIMIT} more (use -v)")
+    if source.fill_empty_only:
+        print("GLPI only fills empty properties (--overwrite to replace QRadar values)")
     return _run_source(client, args, source)
 
 
@@ -740,6 +758,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_import_options(pfsense)
     pfsense.set_defaults(handler=cmd_pfsense_sync)
+
+    glpi = subparsers.add_parser(
+        "glpi-sync",
+        help="Fill asset properties from the assets of the GLPI CMDB",
+        description="Read the GLPI assets (glpi section of the config: computers, network equipment, printers, phones, "
+        "peripherals) with their addresses, groups, users and operating system, and import them as assets, one row "
+        "per GLPI asset, in the QRadar domain of its entity. GLPI only fills empty properties unless --overwrite. "
+        "Without --apply, only shows what would change (dry run).",
+    )
+    glpi.add_argument(
+        "--domain", metavar="ID|NAME", help="QRadar domain of the entities without rule (default: glpi.domain)"
+    )
+    glpi.add_argument("--save-csv", metavar="FILE", help="Also save the generated import rows to this CSV file")
+    glpi.add_argument(
+        "--overwrite", action="store_true", help="Replace QRadar values (default: only fill empty properties)"
+    )
+    _add_import_options(glpi)
+    glpi.set_defaults(handler=cmd_glpi_sync)
 
     sevone = subparsers.add_parser(
         "sevone-sync",
