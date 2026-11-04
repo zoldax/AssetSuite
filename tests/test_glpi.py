@@ -15,6 +15,7 @@ from assetsuite.glpi import (
     import_rows,
     load_glpi_config,
 )
+from tests.test_progress import Recorder
 
 GL = "https://glpi.example.lan"
 API = f"{GL}/apirest.php"
@@ -342,12 +343,31 @@ def test_fetch_reads_in_bulk_and_leaves_aside_a_type_without_right():
         ("OperatingSystemVersion", SYSTEM_VERSIONS),
     ):
         responses.get(f"{API}/{itemtype}", **page(items, 0, len(items), itemtype))
-    cfg = config(itemtypes=["Computer", "Printer", "Phone"])
-    records, read, skipped = fetch_records(cfg)
+    cfg = config(itemtypes=["Computer", "Printer", "Phone", "NetworkEquipment"])
+    responses.get(f"{API}/NetworkEquipment", json=[])
+    progress = Recorder()
+    records, read, skipped = fetch_records(cfg, progress=progress)
     assert read == 4 and {r["name"] for r in records} == {"srv-files", "ws-042", "prn-floor2"}
+    assert progress.phases() == [
+        "GLPI computers",
+        "GLPI printers",
+        "GLPI phones",
+        "GLPI network equipment",
+        "GLPI network addresses",
+        "GLPI groups and operating systems",
+    ]
+    # The phases of several lists count the lists, not their items.
+    tail = progress.events[[e[:2] for e in progress.events].index(("phase", "GLPI network addresses")) :]
+    assert tail[0] == ("phase", "GLPI network addresses", 3) and ("total", 6) not in tail
+    assert [e for e in tail if e[0] == "advance"] == [("advance", 1)] * 8
     assert ("Phones", "the GLPI user cannot read Phone") in skipped
     expanded = [c.request.url for c in responses.calls if "expand_dropdowns" in c.request.url]
-    assert {u.split("/apirest.php/")[1].split("?")[0] for u in expanded} == {"Computer", "Printer", "Phone"}
+    assert {u.split("/apirest.php/")[1].split("?")[0] for u in expanded} == {
+        "Computer",
+        "Printer",
+        "Phone",
+        "NetworkEquipment",
+    }
     assert all(c.request.method == "GET" for c in responses.calls)
     assert responses.calls[-1].request.url.endswith("/killSession")
 

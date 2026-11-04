@@ -54,6 +54,13 @@ ITEMTYPES = {
     "Phone": "Phone",
     "Peripheral": "Peripheral",
 }
+PLURALS = {
+    "Computer": "Computers",
+    "NetworkEquipment": "Network equipment",
+    "Printer": "Printers",
+    "Phone": "Phones",
+    "Peripheral": "Peripherals",
+}
 PAGE_SIZE = 1000
 GROUP, TECHNICAL_GROUP = 1, 2  # Group_Item types
 # Network ports whose addresses are not those of the asset on the network: containers, virtual bridges.
@@ -553,6 +560,21 @@ def import_rows(
     return header, rows
 
 
+class _ListSteps(Progress):
+    """Reads lists for a phase that counts them: one step per list, cancellation still checked between pages."""
+
+    def __init__(self, progress: Progress):
+        self.progress = progress
+
+    def check_cancelled(self) -> None:
+        self.progress.check_cancelled()
+
+    def read(self, client: GlpiClient, path: str, needed: bool = True) -> List[dict]:
+        found = client.get_all(path, progress=self) if needed else []
+        self.progress.advance()
+        return found
+
+
 def fetch_data(client: GlpiClient, progress: Optional[Progress] = None) -> GlpiData:
     """The assets of the types of the config, then their addresses, groups and operating systems, read in bulk."""
     progress = or_none(progress)
@@ -560,22 +582,24 @@ def fetch_data(client: GlpiClient, progress: Optional[Progress] = None) -> GlpiD
     items: Dict[str, List[dict]] = {}
     skipped: List[Tuple[str, str]] = []
     for itemtype in client.config.itemtypes:
-        progress.phase(f"GLPI {ITEMTYPES[itemtype].lower()}s")
+        progress.phase(f"GLPI {PLURALS[itemtype].lower()}")
         try:
             items[itemtype] = client.get_all(itemtype, {**expanded, "is_deleted": "false"}, progress)
         except GlpiRightMissing as e:
-            skipped.append((ITEMTYPES[itemtype] + "s", str(e)))
-    progress.phase("GLPI network addresses")
-    addresses = client.get_all("IPAddress", progress=progress)
-    names = client.get_all("NetworkName", progress=progress)
-    ports = client.get_all("NetworkPort", progress=progress)
-    progress.phase("GLPI groups and operating systems")
+            skipped.append((PLURALS[itemtype], str(e)))
+    # Phases of several lists: one step per list (the total of each list is not the one of the phase).
+    lists = _ListSteps(progress)
+    progress.phase("GLPI network addresses", total=3)
+    addresses = lists.read(client, "IPAddress")
+    names = lists.read(client, "NetworkName")
+    ports = lists.read(client, "NetworkPort")
+    progress.phase("GLPI groups and operating systems", total=5)
     # As they are: expand_dropdowns would replace items_id by the name of the asset.
-    groups = client.get_all("Group_Item", progress=progress)
-    group_names = client.get_all("Group", progress=progress) if groups else []
-    systems = client.get_all("Item_OperatingSystem", progress=progress)
-    system_names = client.get_all("OperatingSystem", progress=progress) if systems else []
-    system_versions = client.get_all("OperatingSystemVersion", progress=progress) if systems else []
+    groups = lists.read(client, "Group_Item")
+    group_names = lists.read(client, "Group", needed=bool(groups))
+    systems = lists.read(client, "Item_OperatingSystem")
+    system_names = lists.read(client, "OperatingSystem", needed=bool(systems))
+    system_versions = lists.read(client, "OperatingSystemVersion", needed=bool(systems))
     return GlpiData(
         items, addresses, names, ports, groups, group_names, systems, system_names, system_versions, skipped
     )
