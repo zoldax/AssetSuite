@@ -4,7 +4,7 @@
 
 AssetSuite helps manage the IBM QRadar asset model from the command line: export assets, update their properties in bulk from CSV, report on asset data quality, and cross-check assets against the Network Hierarchy managed with [NHSuite](https://github.com/zoldax/NHSuite).
 
-> **Status: v0.14.1.** Connection and API capability checks, property and saved search listing, asset export to CSV/JSON, import (property updates and creation of missing assets) with dry run, safety backup and restore, NetBox and phpIPAM IPAM, GLPI CMDB, pfSense DNS/DHCP and IBM SevOne NPM synchronization, data quality report cross-checked with the Network Hierarchy, unit and live test suites.
+> **Status: v0.15.0.** Connection and API capability checks, property and saved search listing, asset export to CSV/JSON, import (property updates and creation of missing assets) with dry run, safety backup and restore, NetBox and phpIPAM IPAM, GLPI CMDB, pfSense DNS/DHCP and IBM SevOne NPM synchronization, data quality report cross-checked with the Network Hierarchy and the asset reconciliation exclusions, unit and live test suites.
 
 > ⚠️ **Before we go further: AssetSuite is NOT meant to be installed on a QRadar console or any QRadar appliance.** It runs from an admin workstation or a small Linux VM and only talks to QRadar through the REST API. Installing it, or its Python packages, on QRadar is unsupported by IBM and can break QRadar components. [Details below](#-installation).
 
@@ -42,6 +42,7 @@ python3 AssetSuite.py check domains    # domains (was NHSuite --check-domain)
 python3 AssetSuite.py check api        # API versions and asset capabilities of this QRadar
 python3 AssetSuite.py properties       # asset property types (id, name, type)
 python3 AssetSuite.py saved-searches   # asset saved searches and their filters
+python3 AssetSuite.py exclusions       # identifiers left out of QRadar's asset reconciliation
 python3 AssetSuite.py export [options] # export assets to CSV or JSON
 python3 AssetSuite.py import FILE      # update asset properties / create missing assets (dry run by default)
 python3 AssetSuite.py restore BACKUP   # put back the values saved before an import (dry run by default)
@@ -185,10 +186,13 @@ python3 AssetSuite.py report --checks duplicate-ip,outside-nh --fail-on high   #
 | `nh-network-changed` | low | IP recorded in another network than the current NH gives (NH changed since the asset was profiled) |
 | `unnamed` | low | No Given Name and no hostname |
 | `no-owner` | low | All owner properties empty (`--owner-property`, default `Business Owner` and `Technical Owner`) |
+| `excluded` | low | An IP, MAC, DNS or NetBIOS name of the asset is on a reconciliation blacklist of QRadar (see below) |
 | `empty-network` | info | NH network without any asset (catch-all groups excluded) |
 | `vulnerable` | info | Asset with vulnerabilities or a risk score |
 
 The console shows a summary and the first findings of each check (`-v` for all); the file holds every finding with `severity`, `check`, `asset_id`, `domain_id`, `target` (IP, MAC, hostname or CIDR), `names` and `detail`. `--checks` / `--skip` select the checks, `--no-nh` skips the NH ones, `--domain` restricts to one domain, `-o report.json` writes JSON with the options and the summary.
+
+**Reconciliation exclusions.** QRadar builds its assets from the identifiers it observes. One seen with too many others (a DHCP or NAT address, a generic name, a shared virtual MAC) would merge several machines into one asset: the system rules `AssetExclusion: Exclude <X> By <Y>` put it in a reference set `Asset Reconciliation <IPv4|DNS|MAC|NetBIOS> Blacklist`, and QRadar no longer matches assets on it (the `... Whitelist` sets hold the identifiers the rules must leave alone). `exclusions` lists both, with since when, by which rule and until when (on QRadar 7.6 the blacklists expire 7 days after an element was last seen). The report reads them for the `excluded` check and for the duplicates: a `duplicate-*` finding says when its shared value is excluded or whitelisted. If QRadar refuses them to the token, the report goes on without the `excluded` check and says why (`warnings` in the JSON). Read only: AssetSuite does not change these sets.
 
 The NH is matched by longest prefix, so a /32 entry wins over its /24. Which groups are catch-all depends on each NH, hence `--catch-all-group` instead of a guess.
 

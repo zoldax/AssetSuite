@@ -25,7 +25,7 @@ import requests
 
 from assetsuite.assets import fetch_assets, format_datetime, last_seen, list_properties
 from assetsuite.capabilities import CREATE_ASSET, DELETE_ASSET, Capabilities, detect_capabilities
-from assetsuite.client import QRadarClient
+from assetsuite.client import QRadarAPIError, QRadarClient
 from assetsuite.glpi import GlpiConfig, GlpiError, load_glpi_config
 from assetsuite.glpi import fetch_records as glpi_fetch_records
 from assetsuite.glpi import import_rows as glpi_import_rows
@@ -48,7 +48,16 @@ from assetsuite.phpipam import fetch_records as phpipam_fetch_records
 from assetsuite.phpipam import import_rows as phpipam_import_rows
 from assetsuite.progress import Progress, or_none
 from assetsuite.quality import CHECKS as QUALITY_CHECKS
-from assetsuite.quality import NH_CHECKS, Finding, ReportOptions, check_assets, sort_findings, summary
+from assetsuite.quality import (
+    DUPLICATE_KINDS,
+    NH_CHECKS,
+    Finding,
+    ReportOptions,
+    check_assets,
+    sort_findings,
+    summary,
+)
+from assetsuite.reconciliation import ReconciliationLists, read_lists
 from assetsuite.sevone import SevOneClient, SevOneConfig, SevOneError, load_sevone_config
 from assetsuite.sevone import fetch_records as sevone_fetch_records
 from assetsuite.sevone import import_rows as sevone_import_rows
@@ -590,6 +599,28 @@ class ReportOutcome:
     networks: Optional[int] = None  # Network Hierarchy networks checked, None without NH checks
     nh_source: str = ""
     last_seen: Dict[int, str] = field(default_factory=dict)  # assets with a finding: last sighting, "" never seen
+    warnings: List[str] = field(default_factory=list)  # what the report could not check, and why
+
+
+def _reconciliation_lists(
+    client: QRadarClient, setup: ReportSetup, outcome: ReportOutcome, progress: Progress
+) -> Optional[ReconciliationLists]:
+    """The reconciliation lists for the excluded check and the duplicates; None, with a warning, when QRadar refuses
+    them: the report goes on without them."""
+    if "excluded" not in setup.enabled and not any(name in DUPLICATE_KINDS for name in setup.enabled):
+        return None
+    progress.phase("Reconciliation exclusions")  # counted in reference sets read
+    try:
+        lists = read_lists(client)
+    except QRadarAPIError as e:
+        message = f"Reconciliation exclusions not read ({e}): the excluded check was not run."
+        logger.warning(message)
+        outcome.warnings.append(message)
+        setup.enabled = [name for name in setup.enabled if name != "excluded"]
+        return None
+    progress.set_total(len(lists.sets))
+    progress.advance(len(lists.sets))
+    return lists
 
 
 def run_report(
@@ -599,10 +630,11 @@ def run_report(
     enabled, options = set(setup.enabled), setup.options
     progress.phase("QRadar assets")
     assets = fetch_assets(client, setup.domain_id, progress=progress)
+    outcome = ReportOutcome(setup, len(assets), [])
+    lists = _reconciliation_lists(client, setup, outcome, progress)
+    enabled = set(setup.enabled)
     progress.phase("Asset checks", len(assets))
-    findings = check_assets(assets, options, enabled, progress)
-
-    outcome = ReportOutcome(setup, len(assets), findings)
+    findings = check_assets(assets, options, enabled, progress, lists)
     if any(name in NH_CHECKS for name in setup.enabled):
         progress.phase("Network Hierarchy")
         try:
@@ -645,4 +677,5 @@ def report_payload(host: str, outcome: ReportOutcome) -> dict:
         "summary": {name: count for name, count in summary(outcome.findings).items() if name in setup.enabled},
         "findings": list(finding_rows(outcome.findings)),
         "last_seen": {str(asset_id): seen for asset_id, seen in outcome.last_seen.items()},
+        "warnings": list(outcome.warnings),
     }

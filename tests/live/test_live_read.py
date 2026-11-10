@@ -2,6 +2,7 @@
 
 import csv
 import json
+import re
 
 import pytest
 
@@ -109,6 +110,13 @@ def test_saved_searches(run):
     code, out, _ = run("saved-searches")
     assert code == EXIT_OK
     assert out.startswith("ID")
+
+
+def test_exclusions(run):
+    code, out, _ = run("exclusions")
+    assert code == EXIT_OK
+    counts = re.search(r"\d+ excluded, \d+ on a whitelist \(\d+ reference sets\)\.", out)
+    assert counts or "No asset reconciliation" in out
 
 
 def test_export_csv_has_every_asset(run, workdir, all_assets):

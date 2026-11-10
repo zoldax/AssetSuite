@@ -43,6 +43,7 @@ from assetsuite.quality import (
     severity_rank,
     summary,
 )
+from assetsuite.reconciliation import EXCLUDED, KIND_LABELS, read_lists, when
 from assetsuite.service import (
     REPORT_COLUMNS,
     REPORT_FINDING_COLUMNS,
@@ -188,6 +189,32 @@ def cmd_properties(client: QRadarClient, args: argparse.Namespace) -> int:
         for p in list_properties(client)
     ]
     _print_table(("ID", "Name", "Type", "Custom"), rows)
+    return EXIT_OK
+
+
+def cmd_exclusions(client: QRadarClient, args: argparse.Namespace) -> int:
+    lists = read_lists(client)
+    if not lists.sets:
+        print("No asset reconciliation reference set on this QRadar.")
+        return EXIT_OK
+    order = list(KIND_LABELS)
+    rows = [
+        (
+            KIND_LABELS[e.kind],
+            e.value,
+            "excluded" if e.listed == EXCLUDED else "whitelist",
+            when(e.first_seen),
+            when(e.last_seen),
+            when(e.expires) or "never",
+            e.domain_id if e.domain_id is not None else "all",
+            e.source,
+        )
+        for e in sorted(lists.entries, key=lambda e: (e.listed != EXCLUDED, order.index(e.kind), e.value))
+    ]
+    if rows:
+        _print_table(("Identifier", "Value", "List", "Since", "Last seen", "Expires", "Domain", "Added by"), rows)
+    excluded = sum(1 for e in lists.entries if e.listed == EXCLUDED)
+    print(f"\n{excluded} excluded, {len(lists.entries) - excluded} on a whitelist ({len(lists.sets)} reference sets).")
     return EXIT_OK
 
 
@@ -649,6 +676,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     saved = subparsers.add_parser("saved-searches", help="List the asset saved searches")
     saved.set_defaults(handler=cmd_saved_searches)
+
+    exclusions = subparsers.add_parser(
+        "exclusions",
+        help="List the identifiers left out of QRadar's asset reconciliation",
+        description="The asset reconciliation blacklists (identifiers QRadar no longer matches assets on, mostly "
+        "added by the AssetExclusion rules) and whitelists of QRadar. Read only.",
+    )
+    exclusions.set_defaults(handler=cmd_exclusions)
 
     export = subparsers.add_parser(
         "export",

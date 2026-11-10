@@ -14,7 +14,7 @@ ASSETSUITE_LIVE=1 pytest tests/live                 # read-only live tests
 ASSETSUITE_LIVE=1 ASSETSUITE_LIVE_WRITE=1 pytest tests/live   # + the write test
 ```
 
-## Unit tests (319)
+## Unit tests (330)
 
 The mocked responses follow what QRadar 7.6.0 FP1 returns (shapes checked on the lab), with anonymized values (RFC 5737 IPs, `example.lan` names).
 
@@ -28,6 +28,7 @@ The mocked responses follow what QRadar 7.6.0 FP1 returns (shapes checked on the
 | `test_importer.py` | 49 | CSV reading (BOM, delimiters, unescaping), import template (plans without errors, documentation values only), column checks, matching order and ambiguity, tie-break by MAC then DNS / NETBIOS names in order, `--fill-empty-only`, assets without IP skipped, numeric comparison, per-IP rows merged, conflicting rows, creation limits, single and bulk payloads |
 | `test_writer.py` | 11 | Updates, single create (201 / 200 reconciled / errors), bulk task polling, split on "too large", 429 retry, timeout, credentials refused while following a bulk task (outcome unknown, no chunk after), `Accept: text/plain` on update / PATCH / DELETE, backup and restore planning, deletes |
 | `test_quality.py` | 8 | Duplicates per domain, stale, unnamed, owners, vulnerable, ordering |
+| `test_reconciliation.py` | 11 | Asset reconciliation lists through the collections API (sets filtered by name, entries by collection) and the older reference data API, time to live in milliseconds or as text, names ignoring case and MAC normalized, entries of one domain, the `excluded` check, duplicates telling whether their shared value is excluded, a report going on with a warning when QRadar refuses the lists, `exclusions` command |
 | `test_network_hierarchy.py` | 9 |
 | `test_pfsense.py` | 25 | Partial (`<unbound>`, `<dhcpd>`) and complete (`<pfsense>`) backups, DNS and DHCP merged by IP, names and domains, MAC-only reservations, networks filter, `CATEGORY - text` descriptions, DOCTYPE / invalid / foreign files refused, clear error without `defusedxml`, config errors, rows; anonymized XML fixtures in `tests/fixtures/` |
 | `test_netbox.py` | 17 | NetBox config and mapping rules, records from IPs / devices / VMs, `-` as empty DNS name, pagination through `next`, Token / Bearer, errors, only assigned devices and VMs fetched | Longest-prefix lookup, outside NH, domain mismatch, `network_id` change, catch-all groups and sub-groups, empty networks, API without `Range`, NHSuite CSV |
@@ -45,7 +46,7 @@ Bugs these tests caught during development: two infinite pagination loops in moc
 
 The QRadar comes from `config.json`, the file in `ASSETSUITE_CONFIG`, or the `QRADAR_HOST` / `QRADAR_SEC_TOKEN` / `QRADAR_SSL_CERT_PATH` variables. Each test runs in a temporary directory: exports, reports, backups and logs never land in the project. The variant configurations of the error tests never contain the token, which goes through `QRADAR_SEC_TOKEN`.
 
-### Read-only (21 tests, `test_live_read.py`)
+### Read-only (22 tests, `test_live_read.py`)
 
 Nothing is written to QRadar.
 
@@ -58,7 +59,7 @@ Nothing is written to QRadar.
 | `test_tls_without_internal_ca` | Internal certificate without its CA: exit 1, `TLS verification failed` (skipped if the QRadar does not use a custom CA) |
 | `test_unsupported_api_version` | `api_version` 99.0: exit 1, HTTP 422 |
 | `test_capabilities_follow_pinned_api_version` | API 24.0 can create but not bulk, 20.0 cannot create |
-| `test_properties`, `test_saved_searches` | Listings |
+| `test_properties`, `test_saved_searches`, `test_exclusions` | Listings |
 | `test_export_csv_has_every_asset` | The CSV holds exactly the assets of the API |
 | `test_export_json_and_per_ip` | JSON count, one row per IP (or one per asset without IP) |
 | `test_export_import_round_trip_changes_nothing` | Export then import as a dry run: every row `unchanged`, no backup written |

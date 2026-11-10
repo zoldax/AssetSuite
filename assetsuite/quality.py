@@ -2,7 +2,8 @@
 quality.py
 
 Asset data quality checks: duplicates, stale assets, missing names or
-owners, and assets carrying vulnerabilities. Network Hierarchy checks live in
+owners, identifiers QRadar leaves out of its asset reconciliation, and assets
+carrying vulnerabilities. Network Hierarchy checks live in
 network_hierarchy.py and produce the same Finding records.
 
 Copyright 2026 Pascal Weber (zoldax) / Abakus Sécurité
@@ -19,6 +20,7 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 from assetsuite.assets import format_datetime, iter_ips, last_seen, property_values
 from assetsuite.importer import NO_HOSTNAME, normalize_mac
 from assetsuite.progress import Progress, or_none
+from assetsuite.reconciliation import EXCLUDED, KIND_LABELS, ReconciliationLists, describe, for_asset
 
 SEVERITIES = ("high", "medium", "low", "info")
 
@@ -34,6 +36,7 @@ CHECKS: Dict[str, Tuple[str, str]] = {
     "nh-network-changed": ("low", "IP recorded in another network than the current Network Hierarchy gives"),
     "unnamed": ("low", "Asset without Given Name nor hostname"),
     "no-owner": ("low", "Asset without owner"),
+    "excluded": ("low", "Identifier of the asset left out of QRadar's asset reconciliation"),
     "empty-network": ("info", "Network Hierarchy network without any asset"),
     "vulnerable": ("info", "Asset with vulnerabilities or a risk score"),
 }
@@ -78,7 +81,19 @@ def _finding(check: str, asset: Mapping, target: str, detail: str) -> Finding:
     return Finding(check, asset.get("id"), asset.get("domain_id"), target, asset_names(asset), detail)
 
 
-def check_duplicates(assets: Sequence[Mapping], enabled: Set[str]) -> List[Finding]:
+DUPLICATE_KINDS = {"duplicate-ip": "ip", "duplicate-mac": "mac", "duplicate-hostname": "dns"}
+
+
+def _on_list(check: str, domain: object, value: str, lists: Optional[ReconciliationLists]) -> str:
+    """The end of the detail of a duplicate whose shared value is on a reconciliation list, else ""."""
+    entries = lists.lookup(DUPLICATE_KINDS[check], value, domain) if lists else []  # type: ignore[arg-type]
+    entries.sort(key=lambda e: e.listed != EXCLUDED)
+    return f"; {describe(entries[0])}" if entries else ""
+
+
+def check_duplicates(
+    assets: Sequence[Mapping], enabled: Set[str], lists: Optional[ReconciliationLists] = None
+) -> List[Finding]:
     keys: Dict[str, Dict[Tuple[object, str], List[Mapping]]] = {
         "duplicate-ip": defaultdict(list),
         "duplicate-mac": defaultdict(list),
@@ -101,22 +116,29 @@ def check_duplicates(assets: Sequence[Mapping], enabled: Set[str]) -> List[Findi
     for check, index in keys.items():
         if check not in enabled:
             continue
-        for (_, value), holders in index.items():
+        for (domain, value), holders in index.items():
             if len(holders) < 2:
                 continue
             ids = sorted(int(a["id"]) for a in holders)
+            listed = _on_list(check, domain, value, lists)
             for asset in holders:
                 others = ", ".join(str(i) for i in ids if i != asset["id"])
-                findings.append(_finding(check, asset, value, f"also on asset(s) {others}"))
+                findings.append(_finding(check, asset, value, f"also on asset(s) {others}{listed}"))
     return findings
 
 
 def check_assets(
-    assets: Sequence[Mapping], options: ReportOptions, enabled: Set[str], progress: Optional[Progress] = None
+    assets: Sequence[Mapping],
+    options: ReportOptions,
+    enabled: Set[str],
+    progress: Optional[Progress] = None,
+    lists: Optional[ReconciliationLists] = None,
 ) -> List[Finding]:
+    """The checks of each asset. lists: the reconciliation lists of QRadar, for the excluded check and the
+    duplicates (None: not read)."""
     progress = or_none(progress)
     progress.set_total(len(assets))
-    findings = check_duplicates(assets, enabled)
+    findings = check_duplicates(assets, enabled, lists)
     limit = options.now - timedelta(days=options.stale_days)
     for asset in assets:
         progress.advance()
@@ -133,6 +155,10 @@ def check_assets(
             findings.append(_finding("unnamed", asset, ips, "no Given Name, no DNS or NETBIOS name"))
         if "no-owner" in enabled and not any(values.get(name, "").strip() for name in options.owner_properties):
             findings.append(_finding("no-owner", asset, "", f"empty: {', '.join(options.owner_properties)}"))
+        if "excluded" in enabled and lists:
+            for kind, value, entry in for_asset(asset, lists):
+                if entry.listed == EXCLUDED:
+                    findings.append(_finding("excluded", asset, value, f"{KIND_LABELS[kind]} {describe(entry)}"))
         vulnerabilities, risk = asset.get("vulnerability_count") or 0, asset.get("risk_score_sum") or 0
         if "vulnerable" in enabled and (vulnerabilities or risk):
             findings.append(_finding("vulnerable", asset, "", f"{vulnerabilities} vulnerabilities, risk score {risk}"))
