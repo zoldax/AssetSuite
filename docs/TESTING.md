@@ -14,7 +14,7 @@ ASSETSUITE_LIVE=1 pytest tests/live                 # read-only live tests
 ASSETSUITE_LIVE=1 ASSETSUITE_LIVE_WRITE=1 pytest tests/live   # + the write test
 ```
 
-## Unit tests (330)
+## Unit tests (335)
 
 The mocked responses follow what QRadar 7.6.0 FP1 returns (shapes checked on the lab), with anonymized values (RFC 5737 IPs, `example.lan` names).
 
@@ -28,7 +28,7 @@ The mocked responses follow what QRadar 7.6.0 FP1 returns (shapes checked on the
 | `test_importer.py` | 49 | CSV reading (BOM, delimiters, unescaping), import template (plans without errors, documentation values only), column checks, matching order and ambiguity, tie-break by MAC then DNS / NETBIOS names in order, `--fill-empty-only`, assets without IP skipped, numeric comparison, per-IP rows merged, conflicting rows, creation limits, single and bulk payloads |
 | `test_writer.py` | 11 | Updates, single create (201 / 200 reconciled / errors), bulk task polling, split on "too large", 429 retry, timeout, credentials refused while following a bulk task (outcome unknown, no chunk after), `Accept: text/plain` on update / PATCH / DELETE, backup and restore planning, deletes |
 | `test_quality.py` | 8 | Duplicates per domain, stale, unnamed, owners, vulnerable, ordering |
-| `test_reconciliation.py` | 11 | Asset reconciliation lists through the collections API (sets filtered by name, entries by collection) and the older reference data API, time to live in milliseconds or as text, names ignoring case and MAC normalized, entries of one domain, the `excluded` check, duplicates telling whether their shared value is excluded, a report going on with a warning when QRadar refuses the lists, `exclusions` command |
+| `test_reconciliation.py` | 16 | Asset reconciliation lists through the collections API (sets filtered by name, entries by collection) and the older reference data API, time to live in milliseconds or as text, names ignoring case and MAC normalized, entries of one domain, the `excluded` check, duplicates telling whether their shared value is excluded, a report going on with a warning when QRadar refuses the lists, `exclusions` command; values checked and normalized, changes planned against the lists (added again, nothing to remove, on the other list, no such list, older API), the entry written or deleted, `exclusions --add/--remove` as a dry run then with `--apply` |
 | `test_network_hierarchy.py` | 9 |
 | `test_pfsense.py` | 25 | Partial (`<unbound>`, `<dhcpd>`) and complete (`<pfsense>`) backups, DNS and DHCP merged by IP, names and domains, MAC-only reservations, networks filter, `CATEGORY - text` descriptions, DOCTYPE / invalid / foreign files refused, clear error without `defusedxml`, config errors, rows; anonymized XML fixtures in `tests/fixtures/` |
 | `test_netbox.py` | 17 | NetBox config and mapping rules, records from IPs / devices / VMs, `-` as empty DNS name, pagination through `next`, Token / Bearer, errors, only assigned devices and VMs fetched | Longest-prefix lookup, outside NH, domain mismatch, `network_id` change, catch-all groups and sub-groups, empty networks, API without `Range`, NHSuite CSV |

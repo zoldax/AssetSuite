@@ -11,7 +11,20 @@ import responses
 
 from assetsuite.cli import EXIT_OK, main
 from assetsuite.quality import CHECKS, ReportOptions, check_assets
-from assetsuite.reconciliation import EXCLUDED, KEPT, describe, for_asset, read_lists, ttl_seconds
+from assetsuite.reconciliation import (
+    ADD,
+    EXCLUDED,
+    KEPT,
+    REMOVE,
+    ReconciliationError,
+    apply_change,
+    describe,
+    for_asset,
+    normalize_value,
+    plan_change,
+    read_lists,
+    ttl_seconds,
+)
 from assetsuite.service import prepare_report, report_payload, run_report
 from tests.conftest import BASE, HOST, TOKEN
 from tests.fixtures import DAY_MS, DOMAINS, NOW, NOW_MS, PROPERTIES, SERVER, WORKSTATION
@@ -29,6 +42,7 @@ RULE = "AssetExclusion: Exclude DNS Name By IP"
 def entry(collection_id, value, source=RULE, days_ago=2, domain_id=None):
     seen = NOW_MS - days_ago * DAY_MS
     return {
+        "id": 100 + len(value) * 10 + collection_id,
         "collection_id": collection_id,
         "value": value,
         "source": source,
@@ -176,3 +190,90 @@ def test_exclusions_command(tmp_path, monkeypatch, capsys):
     assert re.search(r"^IP address +10\.1\.1\.24 +excluded .+ 2 +reference data api$", out, re.M)
     assert re.search(r"^DNS name +gitlab +whitelist .+ never +all +admin$", out, re.M)
     assert "3 excluded, 1 on a whitelist (4 reference sets)." in out
+
+
+def test_values_are_checked_and_normalized():
+    assert normalize_value("mac", "02-00-00-00-9B-6E") == "02:00:00:00:9b:6e"
+    assert normalize_value("ip", " 192.0.2.7 ") == "192.0.2.7"
+    for kind, value in (("ip", "192.0.2"), ("mac", "02:00"), ("dns", "two words"), ("dns", ""), ("os", "x")):
+        with pytest.raises(ReconciliationError):
+            normalize_value(kind, value)
+
+
+def test_changes_planned_against_the_lists(lists):
+    change = plan_change(lists, ADD, "dns", "printer-01.example.lan", EXCLUDED)
+    assert (change.set_name, change.set_id, change.existing) == ("Asset Reconciliation DNS Blacklist", 7, None)
+    assert change.text().endswith("QRadar no longer matches assets on it.")
+    again = plan_change(lists, ADD, "dns", "ws01.example.lan", EXCLUDED)  # already there: its time starts over
+    assert again.existing and "again" in again.text()
+    removed = plan_change(lists, REMOVE, "mac", "02:00:00:00:9b:6e", EXCLUDED)
+    assert removed.existing.entry_id and removed.text().startswith("Remove MAC address 02:00:00:00:9b:6e from")
+    kept = plan_change(lists, ADD, "dns", "files.example.lan", KEPT)
+    assert kept.set_name == "Asset Reconciliation DNS Whitelist"
+    refused = {
+        "nothing to remove": (REMOVE, "dns", "files.example.lan", EXCLUDED),
+        "remove it from there first": (ADD, "dns", "gitlab", EXCLUDED),  # on the whitelist
+        "no asset reconciliation NetBIOS name blacklist": (ADD, "netbios", "WS01", EXCLUDED),
+        "no asset reconciliation IPv6 blacklist": (ADD, "ip", "2001:db8::5", EXCLUDED),
+    }
+    for message, args in refused.items():
+        with pytest.raises(ReconciliationError, match=message):
+            plan_change(lists, *args)
+
+
+@responses.activate
+def test_changes_written_to_qradar(client, lists):
+    added = {"id": 900, "collection_id": 7, "value": "printer-01.example.lan", "notes": "AssetSuite (admin)"}
+    responses.post(f"{BASE}/reference_data_collections/set_entries", json=added, status=201)
+    change = plan_change(lists, ADD, "dns", "printer-01.example.lan", EXCLUDED)
+    entry = apply_change(client, change, "AssetSuite (admin)")
+    assert entry["id"] == 900
+    assert json.loads(responses.calls[0].request.body) == {
+        "collection_id": 7,
+        "value": "printer-01.example.lan",
+        "notes": "AssetSuite (admin)",
+    }
+    change = plan_change(lists, REMOVE, "mac", "02:00:00:00:9b:6e", EXCLUDED)
+    responses.delete(f"{BASE}/reference_data_collections/set_entries/{change.existing.entry_id}", status=204)
+    assert apply_change(client, change)["source"] == "AssetExclusion: Exclude MAC Address By IP"
+
+
+@responses.activate
+def test_lists_read_with_the_older_api_cannot_be_changed(client):
+    responses.get(f"{BASE}/reference_data_collections/sets", status=404, json={"message": "no such endpoint"})
+    responses.get(
+        f"{BASE}/reference_data/sets",
+        json=[{"name": "Asset Reconciliation DNS Blacklist", "time_to_live": "7 days", "timeout_type": "LAST_SEEN"}],
+    )
+    responses.get(f"{BASE}/reference_data/sets/Asset%20Reconciliation%20DNS%20Blacklist", json={"data": []})
+    with pytest.raises(ReconciliationError, match="collections API"):
+        plan_change(read_lists(client), ADD, "dns", "printer", EXCLUDED)
+
+
+@responses.activate
+def test_exclusions_command_changes_one_entry(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    for name in ("QRADAR_HOST", "QRADAR_SEC_TOKEN", "QRADAR_API_VERSION"):
+        monkeypatch.delenv(name, raising=False)
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"host": HOST, "token": TOKEN, "log_file": str(tmp_path / "test.log")}))
+    mock_lists()
+    assert main(["-c", str(config), "exclusions", "--add", "dns:printer-01.example.lan"]) == EXIT_OK
+    assert "Dry run: nothing written" in capsys.readouterr().out
+    assert all(c.request.method == "GET" for c in responses.calls)
+
+    responses.post(f"{BASE}/reference_data_collections/set_entries", json={"id": 901}, status=201)
+    args = ["-c", str(config), "exclusions", "--add", "ip:198.51.100.7", "--whitelist", "--apply", "--note", "VIP"]
+    responses.replace(responses.GET, f"{BASE}/reference_data_collections/sets", json=SETS + [WHITELIST_IPV4])
+    assert main(args) == EXIT_OK
+    assert "Done: entry 901 added to Asset Reconciliation IPv4 Whitelist." in capsys.readouterr().out
+    assert json.loads(responses.calls[-1].request.body) == {"collection_id": 1, "value": "198.51.100.7", "notes": "VIP"}
+    assert main(["-c", str(config), "exclusions", "--remove", "dns:nobody"]) != EXIT_OK
+
+
+WHITELIST_IPV4 = {
+    "id": 1,
+    "name": "Asset Reconciliation IPv4 Whitelist",
+    "time_to_live": None,
+    "expiry_type": "FIRST_SEEN",
+}

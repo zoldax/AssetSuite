@@ -14,7 +14,9 @@ blacklists expire 7 days after an element was last seen, the whitelists never;
 no IPv6 set. The newer names "Blocklist" and "Allowlist" are read too.
 
 Read with /reference_data_collections (API 17.0+), or /reference_data/sets on
-an older QRadar.
+an older QRadar. Changed (an entry added to a list, or removed from it) with
+/reference_data_collections only, by plan_change then apply_change: the CLI
+with --apply, the QRadar App with the session of an administrator.
 
 Copyright 2026 Pascal Weber (zoldax) / Abakus Sécurité
 Licensed under the Apache License, Version 2.0 (see LICENSE).
@@ -22,6 +24,7 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -30,7 +33,7 @@ from urllib.parse import quote
 
 from assetsuite.assets import format_datetime, iter_ips
 from assetsuite.client import QRadarAPIError, QRadarClient
-from assetsuite.importer import normalize_mac
+from assetsuite.importer import NO_HOSTNAME, normalize_mac
 
 PREFIX = "Asset Reconciliation "
 SET_NAME = re.compile(
@@ -39,6 +42,10 @@ SET_NAME = re.compile(
 KINDS = {"ipv4": "ip", "ipv6": "ip", "dns": "dns", "mac": "mac", "netbios": "netbios"}
 KIND_LABELS = {"ip": "IP address", "mac": "MAC address", "dns": "DNS name", "netbios": "NetBIOS name"}
 EXCLUDED, KEPT = "excluded", "kept"  # on a blacklist / on a whitelist
+ADD, REMOVE = "add", "remove"
+LIST_NAMES = {EXCLUDED: "blacklist", KEPT: "whitelist"}
+_MAC = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
+_NAME = re.compile(r"^[^\s,;]{1,255}$")
 LEGACY_PAGE = 1000
 _UNITS = {"year": 365 * 86400, "mon": 30 * 86400, "week": 7 * 86400, "day": 86400, "hour": 3600, "min": 60, "sec": 1}
 
@@ -54,12 +61,19 @@ class Exclusion:
     last_seen: Optional[datetime]
     expires: Optional[datetime]  # None: never
     domain_id: Optional[int]  # None: every domain
+    entry_id: Optional[int] = None  # to remove it (collections API only)
+    notes: str = ""
+
+
+class ReconciliationError(Exception):
+    """A change of a reconciliation list that cannot be made: nothing was written."""
 
 
 @dataclass
 class ReconciliationLists:
     sets: List[str] = field(default_factory=list)  # the names found on this QRadar
     entries: List[Exclusion] = field(default_factory=list)
+    set_ids: Dict[str, int] = field(default_factory=dict)  # name -> id, to write (collections API only)
     _index: Dict[Tuple[str, str], List[Exclusion]] = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
@@ -111,10 +125,16 @@ def _expires(
     return since + timedelta(seconds=ttl) if since else None
 
 
+def _set_type(name: str) -> Tuple[str, str, str]:
+    """(kind, listed, IP version or "") of a reconciliation set name."""
+    match = SET_NAME.match(name)
+    family, list_type = match.group(1).lower(), match.group(2).lower()  # type: ignore[union-attr]
+    listed = EXCLUDED if list_type in ("blacklist", "blocklist") else KEPT
+    return KINDS[family], listed, family if family.startswith("ipv") else ""
+
+
 def _entry(meta: Mapping, item: Mapping, ttl: Optional[int], expiry: str) -> Exclusion:
-    match = SET_NAME.match(meta["name"])
-    kind = KINDS[match.group(1).lower()]  # type: ignore[union-attr]
-    listed = EXCLUDED if match.group(2).lower() in ("blacklist", "blocklist") else KEPT  # type: ignore[union-attr]
+    kind, listed, _ = _set_type(meta["name"])
     first, last = _time(item.get("first_seen")), _time(item.get("last_seen"))
     domain = item.get("domain_id")
     return Exclusion(
@@ -127,6 +147,8 @@ def _entry(meta: Mapping, item: Mapping, ttl: Optional[int], expiry: str) -> Exc
         last,
         _expires(first, last, ttl, expiry),
         int(domain) if domain is not None else None,
+        int(item["id"]) if item.get("id") is not None else None,
+        str(item.get("notes") or ""),
     )
 
 
@@ -144,7 +166,8 @@ def _read_collections(client: QRadarClient) -> ReconciliationLists:
                 entries.append(
                     _entry(meta, item, ttl_seconds(meta.get("time_to_live")), str(meta.get("expiry_type", "")))
                 )
-    return ReconciliationLists(sorted(s["name"] for s in sets.values()), entries)
+    names = sorted(s["name"] for s in sets.values())
+    return ReconciliationLists(names, entries, {s["name"]: set_id for set_id, s in sets.items()})
 
 
 def _read_legacy(client: QRadarClient) -> ReconciliationLists:
@@ -187,7 +210,7 @@ def identifiers(asset: Mapping) -> List[Tuple[str, str]]:
             found.setdefault(("mac", key("mac", interface["mac_address"])), str(interface["mac_address"]))
     for hostname in asset.get("hostnames") or []:
         kind = {"DNS": "dns", "NETBIOS": "netbios"}.get(str(hostname.get("type", "")).upper())
-        if kind and hostname.get("name"):
+        if kind and hostname.get("name") and hostname["name"] != NO_HOSTNAME:  # "-": QRadar's empty name
             found.setdefault((kind, key(kind, hostname["name"])), str(hostname["name"]))
     return [(kind, value) for (kind, _), value in found.items()]
 
@@ -221,3 +244,98 @@ def describe(entry: Exclusion) -> str:
     if entry.expires:
         text += f", until {format_datetime(entry.expires)}"
     return text
+
+
+# --- Changes -----------------------------------------------------------------
+
+
+@dataclass
+class ListChange:
+    """An entry to add to a reconciliation list, or to remove from it."""
+
+    action: str  # ADD or REMOVE
+    kind: str
+    value: str  # as it is written (normalized)
+    listed: str  # the list changed: EXCLUDED (blacklist) or KEPT (whitelist)
+    set_name: str
+    set_id: int
+    existing: Optional[Exclusion]  # the entry already on that list, if any
+
+    def text(self) -> str:
+        """What the change does, in one sentence."""
+        what = f"{KIND_LABELS[self.kind]} {self.value}"
+        if self.action == REMOVE:
+            effect = (
+                "QRadar matches assets on it again, unless its rules exclude it again"
+                if self.listed == EXCLUDED
+                else "QRadar's exclusion rules may exclude it again"
+            )
+            return f"Remove {what} from {self.set_name}: {effect}."
+        if self.listed == EXCLUDED:
+            again = " again (its time to live starts over)" if self.existing else ""
+            return f"Add {what} to {self.set_name}{again}: QRadar no longer matches assets on it."
+        return f"Add {what} to {self.set_name}: QRadar's exclusion rules leave it alone."
+
+
+def normalize_value(kind: str, value: str) -> str:
+    """The value of an identifier as it is written to a list; ReconciliationError when it is not one."""
+    value = str(value or "").strip()
+    if kind == "ip":
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError as e:
+            raise ReconciliationError(f"Not an IP address: {value!r}") from e
+    if kind == "mac":
+        mac = normalize_mac(value)
+        if not _MAC.match(mac):
+            raise ReconciliationError(f"Not a MAC address: {value!r}")
+        return mac
+    if kind in ("dns", "netbios"):
+        if not _NAME.match(value):
+            raise ReconciliationError(f"Not a {KIND_LABELS[kind]}: {value!r}")
+        return value
+    raise ReconciliationError(f"Unknown identifier kind {kind!r}: {', '.join(KIND_LABELS)}")
+
+
+def plan_change(lists: ReconciliationLists, action: str, kind: str, value: str, listed: str) -> ListChange:
+    """
+    The change to make, checked against the lists as QRadar has them now:
+    ReconciliationError when it cannot be made (no such list, nothing to
+    remove, already on the other list). Adding a value already on the same
+    blacklist adds it again: its time to live starts over.
+    """
+    if action not in (ADD, REMOVE) or listed not in LIST_NAMES:
+        raise ReconciliationError(f"Unknown change: {action} {listed}")
+    value = normalize_value(kind, value)
+    family = f"ipv{ipaddress.ip_address(value).version}" if kind == "ip" else ""
+    sets = [n for n in lists.sets if _set_type(n) == (kind, listed, family)]
+    if not sets:
+        wanted = f"{family.replace('ipv', 'IPv') or KIND_LABELS[kind]} {LIST_NAMES[listed]}"
+        raise ReconciliationError(f"This QRadar has no asset reconciliation {wanted}")
+    if sets[0] not in lists.set_ids:
+        raise ReconciliationError("Changing the lists needs the reference data collections API (QRadar API 17.0+)")
+    found = [e for e in lists.lookup(kind, value) if e.set_name == sets[0] and e.domain_id is None]
+    existing = found[0] if found else None
+    if action == REMOVE and not existing:
+        raise ReconciliationError(f"{KIND_LABELS[kind]} {value} is not on {sets[0]}: nothing to remove")
+    if action == ADD:
+        other = [e for e in lists.lookup(kind, value) if e.listed != listed]
+        if other:
+            raise ReconciliationError(
+                f"{KIND_LABELS[kind]} {value} is on {other[0].set_name}: remove it from there first"
+            )
+    return ListChange(action, kind, value, listed, sets[0], lists.set_ids[sets[0]], existing)
+
+
+def apply_change(client: QRadarClient, change: ListChange, note: str = "") -> Dict[str, object]:
+    """Write the change to QRadar. The entry added (as QRadar returns it), or the entry removed."""
+    if change.action == REMOVE:
+        if change.existing is None or change.existing.entry_id is None:
+            raise ReconciliationError(f"No entry to remove for {change.value}")
+        client.request("DELETE", f"reference_data_collections/set_entries/{change.existing.entry_id}")
+        return {"id": change.existing.entry_id, "value": change.existing.value, "source": change.existing.source}
+    body: Dict[str, object] = {"collection_id": change.set_id, "value": change.value}
+    if note:
+        body["notes"] = note[:255]
+    added = client.post("reference_data_collections/set_entries", json_body=body)
+    return dict(added) if isinstance(added, dict) else {"value": change.value}

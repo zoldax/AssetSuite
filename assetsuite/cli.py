@@ -43,7 +43,18 @@ from assetsuite.quality import (
     severity_rank,
     summary,
 )
-from assetsuite.reconciliation import EXCLUDED, KIND_LABELS, read_lists, when
+from assetsuite.reconciliation import (
+    ADD,
+    EXCLUDED,
+    KEPT,
+    KIND_LABELS,
+    REMOVE,
+    ReconciliationError,
+    apply_change,
+    plan_change,
+    read_lists,
+    when,
+)
 from assetsuite.service import (
     REPORT_COLUMNS,
     REPORT_FINDING_COLUMNS,
@@ -192,7 +203,27 @@ def cmd_properties(client: QRadarClient, args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _list_change(client: QRadarClient, args: argparse.Namespace) -> int:
+    action, target = (ADD, args.add) if args.add else (REMOVE, args.remove)
+    kind, _, value = target.partition(":")
+    listed = KEPT if args.whitelist else EXCLUDED
+    try:
+        change = plan_change(read_lists(client), action, kind.strip().lower(), value, listed)
+    except ReconciliationError as e:
+        logger.error("%s", e)
+        return EXIT_ERROR
+    print(change.text())
+    if not args.apply:
+        print("\nDry run: nothing written. Use --apply to write it to QRadar.")
+        return EXIT_OK
+    entry = apply_change(client, change, args.note or "AssetSuite CLI")
+    print(f"\nDone: entry {entry.get('id', '')} {'added to' if action == ADD else 'removed from'} {change.set_name}.")
+    return EXIT_OK
+
+
 def cmd_exclusions(client: QRadarClient, args: argparse.Namespace) -> int:
+    if args.add or args.remove:
+        return _list_change(client, args)
     lists = read_lists(client)
     if not lists.sets:
         print("No asset reconciliation reference set on this QRadar.")
@@ -681,8 +712,15 @@ def build_parser() -> argparse.ArgumentParser:
         "exclusions",
         help="List the identifiers left out of QRadar's asset reconciliation",
         description="The asset reconciliation blacklists (identifiers QRadar no longer matches assets on, mostly "
-        "added by the AssetExclusion rules) and whitelists of QRadar. Read only.",
+        "added by the AssetExclusion rules) and whitelists of QRadar. With --add or --remove, changes one entry "
+        "(dry run unless --apply). KIND is ip, mac, dns or netbios.",
     )
+    change = exclusions.add_mutually_exclusive_group()
+    change.add_argument("--add", metavar="KIND:VALUE", help="Add to the blacklist (or --whitelist), e.g. dns:printer")
+    change.add_argument("--remove", metavar="KIND:VALUE", help="Remove from the blacklist (or --whitelist)")
+    exclusions.add_argument("--whitelist", action="store_true", help="Change the whitelist instead of the blacklist")
+    exclusions.add_argument("--note", metavar="TEXT", help="Notes of the entry added (default 'AssetSuite CLI')")
+    exclusions.add_argument("--apply", action="store_true", help="Write to QRadar (default: dry run)")
     exclusions.set_defaults(handler=cmd_exclusions)
 
     export = subparsers.add_parser(
