@@ -332,7 +332,12 @@ def apply_change(client: QRadarClient, change: ListChange, note: str = "") -> Di
     if change.action == REMOVE:
         if change.existing is None or change.existing.entry_id is None:
             raise ReconciliationError(f"No entry to remove for {change.value}")
-        client.request("DELETE", f"reference_data_collections/set_entries/{change.existing.entry_id}")
+        # QRadar 7.6 answers this DELETE in text/plain only: HTTP 406 when asked for JSON (seen on the lab).
+        client.request(
+            "DELETE",
+            f"reference_data_collections/set_entries/{change.existing.entry_id}",
+            headers={"Accept": "text/plain"},
+        )
         return {"id": change.existing.entry_id, "value": change.existing.value, "source": change.existing.source}
     body: Dict[str, object] = {"collection_id": change.set_id, "value": change.value}
     if note:

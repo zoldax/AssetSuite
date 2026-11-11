@@ -236,6 +236,7 @@ def test_changes_written_to_qradar(client, lists):
     change = plan_change(lists, REMOVE, "mac", "02:00:00:00:9b:6e", EXCLUDED)
     responses.delete(f"{BASE}/reference_data_collections/set_entries/{change.existing.entry_id}", status=204)
     assert apply_change(client, change)["source"] == "AssetExclusion: Exclude MAC Address By IP"
+    assert responses.calls[-1].request.headers["Accept"] == "text/plain"  # QRadar answers 406 to JSON
 
 
 @responses.activate
