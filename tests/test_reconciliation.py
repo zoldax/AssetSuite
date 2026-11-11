@@ -4,6 +4,7 @@ the duplicates that say whether their shared value is excluded."""
 import copy
 import json
 import re
+from datetime import timedelta
 from urllib.parse import unquote_plus
 
 import pytest
@@ -78,6 +79,9 @@ def test_lists_read_with_the_collections_api(client, lists):
     dns = lists.lookup("dns", "ws01.EXAMPLE.lan")[0]
     assert (dns.listed, dns.source) == (EXCLUDED, RULE)
     assert (dns.expires - dns.last_seen).days == 7  # LAST_SEEN: a week after it was last seen
+    # The time of the console, as QRadar counts and shows it: no time zone, never converted.
+    assert dns.first_seen.tzinfo is None and dns.first_seen == NOW.replace(tzinfo=None) - timedelta(days=2)
+    assert "since 2026-10-25T12:00:00, by" in describe(dns)
     assert lists.lookup("mac", "02-00-00-00-9b-6e")  # MAC compared normalized
     assert lists.lookup("ip", "10.1.1.24", 1) == [] and lists.lookup("ip", "10.1.1.24", 2)  # its domain only
     kept = lists.lookup("dns", "gitlab")[0]

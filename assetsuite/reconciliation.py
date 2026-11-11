@@ -13,6 +13,11 @@ identifiers the rules must leave alone. Observed on QRadar 7.6.0 FP1: the
 blacklists expire 7 days after an element was last seen, the whitelists never;
 no IPv6 set. The newer names "Blocklist" and "Allowlist" are read too.
 
+The first_seen and last_seen of the entries are the time of the console, not
+UTC: on the lab (QRadar 7.6.0 FP1, console in UTC+1), an entry added at 10:15
+gave 10:15 read as UTC, and Reference Data Management shows that time. They are
+kept as such, without time zone.
+
 Read with /reference_data_collections (API 17.0+), or /reference_data/sets on
 an older QRadar. Changed (an entry added to a list, or removed from it) with
 /reference_data_collections only, by plan_change then apply_change: the CLI
@@ -95,8 +100,11 @@ def key(kind: str, value: str) -> str:
 
 
 def _time(ms: object) -> Optional[datetime]:
+    """The time of the console an entry gives (milliseconds that QRadar counts in its own time zone): no zone."""
     try:
-        return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc) if ms else None  # type: ignore[arg-type]
+        if not ms:
+            return None
+        return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).replace(tzinfo=None)  # type: ignore[arg-type]
     except (TypeError, ValueError, OverflowError):
         return None
 
@@ -226,7 +234,8 @@ def for_asset(asset: Mapping, lists: ReconciliationLists) -> List[Tuple[str, str
 
 
 def when(value: Optional[datetime]) -> str:
-    return value.strftime("%Y-%m-%d %H:%M UTC") if value else ""
+    """A time of the console, as QRadar shows it."""
+    return value.strftime("%Y-%m-%d %H:%M") if value else ""
 
 
 def describe(entry: Exclusion) -> str:
